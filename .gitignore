@@ -63,3 +63,5 @@ pgdata/
 *.sln
 *.swp
 *.swo
+.kilo/
+
