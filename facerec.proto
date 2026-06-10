@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package facerec;
+option go_package = "./facerec";
+
+service FaceInferenceService {
+  // Bidirectional stream for both real-time frame processing and face registration
+  rpc ProcessStream(stream InferenceResult) returns (stream FrameTask);
+}
+
+message FrameTask {
+  string task_id = 1;
+  bytes image_data = 2; // JPEG bytes
+  bool is_registration = 3;
+}
+
+message InferenceResult {
+  string task_id = 1;
+  repeated Detection detections = 2;
+}
+
+message Detection {
+  repeated float bbox = 1; // [x1, y1, x2, y2]
+  repeated float embedding = 2; // 512-dim embedding
+}

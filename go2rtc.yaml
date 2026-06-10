@@ -1,0 +1,20 @@
+# go2rtc configuration for Docker deployment
+# Ref: https://github.com/AlexxIT/go2rtc/wiki/Configuration
+
+webrtc:
+  # Listen for WebRTC media on TCP port 8555 (exposed in docker-compose)
+  listen: ":8555/tcp"
+  # Auto-discover external IP via STUN and advertise port 8555
+  candidates:
+    - stun:8555
+
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8554"
+streams:
+  cam_2:
+    - rtsp://dummy:dummy@10.101.20.9:554/camId=602&_sid=AcM8P_NY5x6ERBvu2eoyvMXG63UXSFPtgq_FvyKStLgde_ua47vpJVXbeYXiwMKvc47O39ADdbb6wZMUhpmM_0
+  cam_7:
+    - rtsp://dummy:dummy@10.101.20.9:554/camId=1790&_sid=WtQ5M0_HO59k96TI9GsnnB8mVkN0Z2goj_4ypfIe4HUs5bd6I_j7jz7MC1szIkSppUsCa7wwNGJCLAfS-4rcU0

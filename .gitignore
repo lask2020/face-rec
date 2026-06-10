@@ -1,0 +1,65 @@
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.eggs/
+
+# PyInstaller (Windows Build Artifacts)
+backend/build/
+backend/dist/
+backend/*.spec
+
+# Node/React Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Go Binaries & Cache
+go-control-plane/control-plane
+go-ingestion/go-worker
+.go/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Local Databases & Media
+backend/data/*.db
+backend/data/models/
+go-control-plane/data/
+postgres_data/
+qdrant_data/
+rustfs_data/
+pgdata/
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo

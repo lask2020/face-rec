@@ -1,0 +1,441 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
+	"github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+
+	facerec "github.com/face-rec/go-control-plane/facerec"
+)
+
+type AIWorkerSession struct {
+	stream facerec.FaceInferenceService_ProcessStreamServer
+	id     string
+}
+
+type PendingTask struct {
+	CameraID   uint
+	Timestamp  int64
+	ImageBytes []byte
+}
+
+var (
+	// Active gRPC worker streams
+	activeWorkers   = make([]*AIWorkerSession, 0)
+	activeWorkersMu sync.Mutex
+	workerIndex     int
+
+	// Pending tasks waiting for AI response
+	pendingTasks   = make(map[string]PendingTask)
+	pendingTasksMu sync.Mutex
+
+	// Channels to resolve face registrations
+	regChannels   = make(map[string]chan []float32)
+	regChannelsMu sync.Mutex
+
+	// gRPC Server instance
+	grpcServer *grpc.Server
+)
+
+
+type FaceInferenceServer struct {
+	facerec.UnimplementedFaceInferenceServiceServer
+}
+
+func StartGRPCServer() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen on port 50051: %v", err)
+	}
+
+	grpcServer = grpc.NewServer()
+	facerec.RegisterFaceInferenceServiceServer(grpcServer, &FaceInferenceServer{})
+
+	log.Println("gRPC Server listening on port 50051...")
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Printf("gRPC Server failed to serve: %v", err)
+		}
+	}()
+
+	// Start background frame dispatcher
+	go StartFrameDispatcher(context.Background())
+}
+
+func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_ProcessStreamServer) error {
+	session := &AIWorkerSession{
+		stream: stream,
+		id:     uuid.New().String(),
+	}
+
+	registerWorker(session)
+	defer deregisterWorker(session)
+
+	log.Printf("[gRPC] New AI worker connected: %s", session.id)
+
+	for {
+		result, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("[gRPC] AI worker disconnected: %s, error: %v", session.id, err)
+			break
+		}
+		handleInferenceResult(result)
+	}
+
+	return nil
+}
+
+func registerWorker(w *AIWorkerSession) {
+	activeWorkersMu.Lock()
+	defer activeWorkersMu.Unlock()
+	activeWorkers = append(activeWorkers, w)
+}
+
+func deregisterWorker(w *AIWorkerSession) {
+	activeWorkersMu.Lock()
+	defer activeWorkersMu.Unlock()
+	for i, v := range activeWorkers {
+		if v.id == w.id {
+			activeWorkers = append(activeWorkers[:i], activeWorkers[i+1:]...)
+			break
+		}
+	}
+}
+
+func getNextWorker() *AIWorkerSession {
+	activeWorkersMu.Lock()
+	defer activeWorkersMu.Unlock()
+	if len(activeWorkers) == 0 {
+		return nil
+	}
+	worker := activeWorkers[workerIndex%len(activeWorkers)]
+	workerIndex++
+	return worker
+}
+
+// SendRegistrationTask sends a face image to a worker for embedding extraction
+func SendRegistrationTask(ctx context.Context, imgBytes []byte) ([]float32, error) {
+	worker := getNextWorker()
+	if worker == nil {
+		return nil, fmt.Errorf("no AI workers connected")
+	}
+
+	taskID := uuid.New().String()
+	ch := make(chan []float32, 1)
+
+	regChannelsMu.Lock()
+	regChannels[taskID] = ch
+	regChannelsMu.Unlock()
+	defer func() {
+		regChannelsMu.Lock()
+		delete(regChannels, taskID)
+		regChannelsMu.Unlock()
+	}()
+
+	// Send frame task down the worker stream
+	err := worker.stream.Send(&facerec.FrameTask{
+		TaskId:         taskID,
+		ImageData:      imgBytes,
+		IsRegistration: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to send task to AI worker: %w", err)
+	}
+
+	// Wait for response with a timeout of 10s
+	select {
+	case embedding := <-ch:
+		if len(embedding) == 0 {
+			return nil, fmt.Errorf("no face detected in image")
+		}
+		return embedding, nil
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("timeout waiting for embedding extraction")
+	}
+}
+
+func handleInferenceResult(result *facerec.InferenceResult) {
+	// 1. Check if it's a registration task
+	regChannelsMu.Lock()
+	ch, isReg := regChannels[result.TaskId]
+	regChannelsMu.Unlock()
+
+	if isReg {
+		if len(result.Detections) > 0 {
+			ch <- result.Detections[0].Embedding
+		} else {
+			ch <- nil
+		}
+		return
+	}
+
+	// 2. Otherwise, it's a real-time frame task
+	pendingTasksMu.Lock()
+	task, exists := pendingTasks[result.TaskId]
+	if exists {
+		delete(pendingTasks, result.TaskId)
+	}
+	pendingTasksMu.Unlock()
+
+	if !exists {
+		// Task already timed out or processed
+		return
+	}
+
+	ctx := context.Background()
+
+	// If no faces detected, we skip logging and S3 uploads
+	if len(result.Detections) == 0 {
+		return
+	}
+
+	// Process detections
+	type UIResultDetection struct {
+		BBox       []float64 `json:"bbox"`
+		PersonID   *uint     `json:"person_id"`
+		Confidence float64   `json:"confidence"`
+	}
+
+	uiDetections := make([]UIResultDetection, 0)
+	bboxes := make([][]float64, 0)
+	isKnown := make([]bool, 0)
+
+	recorded := 0
+	for idx, det := range result.Detections {
+		// REST search in Qdrant
+		similarityThreshold := 0.4 // settings.SIMILARITY_THRESHOLD
+		personID, _, score, err := SearchFaceEmbedding(ctx, det.Embedding, similarityThreshold)
+		if err != nil {
+			log.Printf("[gRPC] Qdrant search error: %v", err)
+		}
+
+		bbox64 := []float64{
+			float64(det.Bbox[0]),
+			float64(det.Bbox[1]),
+			float64(det.Bbox[2]),
+			float64(det.Bbox[3]),
+		}
+		bboxes = append(bboxes, bbox64)
+		isKnown = append(isKnown, personID != nil)
+
+		uiDetections = append(uiDetections, UIResultDetection{
+			BBox:       bbox64,
+			PersonID:   personID,
+			Confidence: score,
+		})
+
+		logEntry := DetectionLog{
+			CameraID:   task.CameraID,
+			Confidence: score,
+			DetectedAt: time.UnixMilli(task.Timestamp),
+			PersonID:   personID,
+		}
+
+		// Look up camera name
+		var cam Camera
+		if DB.First(&cam, task.CameraID).Error == nil {
+			logEntry.CameraName = cam.Name
+		}
+
+		// Look up person name
+		if personID != nil {
+			var person Person
+			if DB.First(&person, *personID).Error == nil {
+				logEntry.PersonName = person.Name
+			} else {
+				logEntry.PersonName = fmt.Sprintf("Person %d", *personID)
+			}
+		} else {
+			logEntry.PersonName = "Unknown"
+		}
+
+		// Save snapshot url path (will draw bboxes first and write it to S3)
+		filename := fmt.Sprintf("cam_%d_%d.jpg", task.CameraID, task.Timestamp)
+		logEntry.SnapshotPath = "/api/static/snapshots/" + filename
+
+		// Crop the face from the original frame
+		x1, y1, x2, y2 := int(det.Bbox[0]), int(det.Bbox[1]), int(det.Bbox[2]), int(det.Bbox[3])
+		croppedFace, err := CropJPEG(task.ImageBytes, x1, y1, x2, y2, 90)
+		if err == nil && S3Client != nil {
+			cropFilename := fmt.Sprintf("crop_cam_%d_%d_%d.jpg", task.CameraID, task.Timestamp, idx)
+			_, err = S3Client.PutObject(ctx, SnapshotsBucket, cropFilename, bytes.NewReader(croppedFace), int64(len(croppedFace)), minio.PutObjectOptions{
+				ContentType: "image/jpeg",
+			})
+			if err == nil {
+				logEntry.FaceCropPath = "/api/static/snapshots/" + cropFilename
+			} else {
+				log.Printf("[gRPC] Failed to upload face crop to S3: %v", err)
+			}
+		} else if err != nil {
+			log.Printf("[gRPC] Failed to crop face: %v", err)
+		}
+
+		DB.Create(&logEntry)
+		recorded++
+	}
+
+	// 3. Draw bounding boxes on frame copy
+	drawnFrame, err := DrawBBoxesOnJPEG(task.ImageBytes, bboxes, isKnown, 70)
+	if err != nil {
+		log.Printf("[gRPC] Failed to draw bounding boxes on frame: %v", err)
+		drawnFrame = task.ImageBytes
+	}
+
+	// 4. Upload snapshot to S3
+	filename := fmt.Sprintf("cam_%d_%d.jpg", task.CameraID, task.Timestamp)
+	if S3Client != nil {
+		_, err = S3Client.PutObject(ctx, SnapshotsBucket, filename, bytes.NewReader(drawnFrame), int64(len(drawnFrame)), minio.PutObjectOptions{
+			ContentType: "image/jpeg",
+		})
+		if err != nil {
+			log.Printf("[gRPC] Failed to upload snapshot %s to S3: %v", filename, err)
+		}
+	}
+
+	// 5. Broadcast to UI via WebSockets
+	payload := fiber.Map{
+		"camera_id":     task.CameraID,
+		"timestamp":     task.Timestamp,
+		"snapshot_path": filename,
+		"detections":    uiDetections,
+	}
+	BroadcastDetection(payload)
+
+	if recorded > 0 {
+		log.Printf("[Camera %d] Recorded %d detections.", task.CameraID, recorded)
+	}
+}
+
+func StartFrameDispatcher(ctx context.Context) {
+	log.Println("Background frame dispatcher started.")
+
+	groupName := "control-plane-group"
+	consumerName := "cp-dispatcher"
+	streamName := "image.queue"
+
+	// Create consumer group
+	RDB.XGroupCreateMkStream(ctx, streamName, groupName, "0")
+
+	for {
+		// 1. Wait until we have at least one active AI worker
+		for {
+			activeWorkersMu.Lock()
+			count := len(activeWorkers)
+			activeWorkersMu.Unlock()
+			if count > 0 {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// 2. Consume frame from Redis Stream
+		res, err := RDB.XReadGroup(ctx, &redis.XReadGroupArgs{
+			Group:    groupName,
+			Consumer: consumerName,
+			Streams:  []string{streamName, ">"},
+			Count:    1,
+			Block:    2000 * time.Millisecond,
+		}).Result()
+
+		if err != nil {
+			if err != redis.Nil {
+				log.Printf("[Dispatcher] Redis Stream read error: %v", err)
+			}
+			continue
+		}
+
+		for _, stream := range res {
+			for _, msg := range stream.Messages {
+				var cameraID uint
+				var ts int64
+				var data []byte
+
+				// Safe parsing camera_id
+				if val, ok := msg.Values["camera_id"].(string); ok {
+					cid, _ := fmt.Sscanf(val, "%d", &cameraID)
+					if cid == 0 {
+						// fallback
+						var valInt int
+						fmt.Sscanf(val, "%d", &valInt)
+						cameraID = uint(valInt)
+					}
+				} else if val, ok := msg.Values["camera_id"].(int64); ok {
+					cameraID = uint(val)
+				}
+
+				// Safe parsing ts
+				if val, ok := msg.Values["ts"].(string); ok {
+					fmt.Sscanf(val, "%d", &ts)
+				} else if val, ok := msg.Values["ts"].(int64); ok {
+					ts = val
+				}
+
+				// Safe parsing data
+				if val, ok := msg.Values["data"].(string); ok {
+					data = []byte(val)
+				} else if val, ok := msg.Values["data"].([]byte); ok {
+					data = val
+				}
+
+				// Dispatch to next AI worker
+				worker := getNextWorker()
+				if worker == nil {
+					// Put back or wait
+					log.Println("[Dispatcher] No worker available, skipped frame.")
+					continue
+				}
+
+				taskID := fmt.Sprintf("%d_%d_%s", cameraID, ts, uuid.New().String())
+
+				// Register pending task
+				pendingTasksMu.Lock()
+				pendingTasks[taskID] = PendingTask{
+					CameraID:   cameraID,
+					Timestamp:  ts,
+					ImageBytes: data,
+				}
+				pendingTasksMu.Unlock()
+
+				// Clean up pending task after timeout (30 seconds)
+				go func(tid string) {
+					time.Sleep(30 * time.Second)
+					pendingTasksMu.Lock()
+					delete(pendingTasks, tid)
+					pendingTasksMu.Unlock()
+				}(taskID)
+
+				// Send task over stream
+				err = worker.stream.Send(&facerec.FrameTask{
+					TaskId:         taskID,
+					ImageData:      data,
+					IsRegistration: false,
+				})
+
+				if err != nil {
+					log.Printf("[Dispatcher] Failed to send frame to worker %s: %v", worker.id, err)
+					pendingTasksMu.Lock()
+					delete(pendingTasks, taskID)
+					pendingTasksMu.Unlock()
+				}
+
+				// Acknowledge Redis Stream message
+				RDB.XAck(ctx, streamName, groupName, msg.ID)
+				RDB.XDel(ctx, streamName, msg.ID)
+			}
+		}
+	}
+}
