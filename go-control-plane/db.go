@@ -24,7 +24,7 @@ type Person struct {
 
 type PersonFace struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	PersonID  uint      `gorm:"not null" json:"person_id"`
+	PersonID  uint      `gorm:"not null;index" json:"person_id"`
 	ImagePath string    `gorm:"size:512;not null" json:"image_path"`
 	ImageUrl  string    `gorm:"-" json:"image_url"`
 	Embedding []byte    `gorm:"type:bytea;not null" json:"-"`
@@ -58,9 +58,9 @@ func (Camera) TableName() string {
 
 type DetectionLog struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
-	PersonID     *uint     `json:"person_id"`
+	PersonID     *uint     `gorm:"index" json:"person_id"`
 	PersonName   string    `gorm:"size:255;default:'Unknown'" json:"person_name"`
-	CameraID     uint      `gorm:"not null" json:"camera_id"`
+	CameraID     uint      `gorm:"not null;index" json:"camera_id"`
 	CameraName   string    `gorm:"size:255;default:''" json:"camera_name"`
 	Confidence   float64   `gorm:"default:0.0" json:"confidence"`
 	SnapshotPath string    `gorm:"size:512" json:"snapshot_url"`

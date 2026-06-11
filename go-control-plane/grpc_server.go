@@ -20,15 +20,22 @@ import (
 )
 
 type AIWorkerSession struct {
-	stream      facerec.FaceInferenceService_ProcessStreamServer
-	id          string
-	connectedAt time.Time
+	stream       facerec.FaceInferenceService_ProcessStreamServer
+	id           string
+	connectedAt  time.Time
+	avgProcessMs float64
+	mu           sync.Mutex
 }
 
 type PendingTask struct {
 	CameraID   uint
 	Timestamp  int64
 	ImageBytes []byte
+}
+
+type RegistrationResult struct {
+	Embedding    []float32
+	ErrorMessage string
 }
 
 var (
@@ -46,7 +53,7 @@ var (
 	pendingTasksMu sync.Mutex
 
 	// Channels to resolve face registrations
-	regChannels   = make(map[string]chan []float32)
+	regChannels   = make(map[string]chan RegistrationResult)
 	regChannelsMu sync.Mutex
 
 	// gRPC Server instance
@@ -64,7 +71,10 @@ func StartGRPCServer() {
 		log.Fatalf("Failed to listen on port 50051: %v", err)
 	}
 
-	grpcServer = grpc.NewServer()
+	grpcServer = grpc.NewServer(
+		grpc.MaxRecvMsgSize(20 * 1024 * 1024),
+		grpc.MaxSendMsgSize(20 * 1024 * 1024),
+	)
 	facerec.RegisterFaceInferenceServiceServer(grpcServer, &FaceInferenceServer{})
 
 	log.Println("gRPC Server listening on port 50051...")
@@ -99,6 +109,19 @@ func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_
 			log.Printf("[gRPC] AI worker disconnected: %s, error: %v", session.id, err)
 			break
 		}
+
+		// Update average processing time metrics
+		if result.ProcessTimeMs > 0 {
+			session.mu.Lock()
+			session.avgProcessMs = float64(result.ProcessTimeMs)
+			session.mu.Unlock()
+		}
+
+		// Skip DB & storage tracking for system metric update events
+		if result.TaskId == "metrics" {
+			continue
+		}
+
 		handleInferenceResult(result)
 	}
 
@@ -250,7 +273,7 @@ func SendRegistrationTask(ctx context.Context, imgBytes []byte) ([]float32, erro
 	}
 
 	taskID := uuid.New().String()
-	ch := make(chan []float32, 1)
+	ch := make(chan RegistrationResult, 1)
 
 	regChannelsMu.Lock()
 	regChannels[taskID] = ch
@@ -273,11 +296,14 @@ func SendRegistrationTask(ctx context.Context, imgBytes []byte) ([]float32, erro
 
 	// Wait for response with a timeout of 10s
 	select {
-	case embedding := <-ch:
-		if len(embedding) == 0 {
+	case res := <-ch:
+		if res.ErrorMessage != "" {
+			return nil, fmt.Errorf(res.ErrorMessage)
+		}
+		if len(res.Embedding) == 0 {
 			return nil, fmt.Errorf("no face detected in image")
 		}
-		return embedding, nil
+		return res.Embedding, nil
 	case <-time.After(10 * time.Second):
 		return nil, fmt.Errorf("timeout waiting for embedding extraction")
 	}
@@ -290,10 +316,21 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 	regChannelsMu.Unlock()
 
 	if isReg {
-		if len(result.Detections) > 0 {
-			ch <- result.Detections[0].Embedding
+		if result.ErrorMessage != "" {
+			ch <- RegistrationResult{
+				Embedding:    nil,
+				ErrorMessage: result.ErrorMessage,
+			}
+		} else if len(result.Detections) > 0 {
+			ch <- RegistrationResult{
+				Embedding:    result.Detections[0].Embedding,
+				ErrorMessage: "",
+			}
 		} else {
-			ch <- nil
+			ch <- RegistrationResult{
+				Embedding:    nil,
+				ErrorMessage: "",
+			}
 		}
 		return
 	}

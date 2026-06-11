@@ -105,10 +105,16 @@ export default function Workers() {
                 <span className="camera-badge online" style={{ flexShrink: 0 }}>Online</span>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', background: 'rgba(255,255,255,0.02)', padding: '10px 14px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', background: 'rgba(255,255,255,0.02)', padding: '10px 14px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
                 <div>
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Uptime</div>
-                  <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--accent-blue)', marginTop: '2px' }}>{worker.uptime}</div>
+                  <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--accent-blue)', marginTop: '2px' }}>{worker.uptime}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Avg Latency</div>
+                  <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--accent-green)', marginTop: '2px' }}>
+                    {worker.avg_process_ms > 0 ? `${worker.avg_process_ms.toFixed(0)} ms` : '0 ms'}
+                  </div>
                 </div>
                 <div>
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Connected At</div>

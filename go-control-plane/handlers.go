@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
@@ -313,9 +313,9 @@ func float32SliceToBytes(slice []float32) []byte {
 	if len(slice) == 0 {
 		return nil
 	}
-	const float32Size = 4
-	length := len(slice) * float32Size
-	return (*[1 << 30]byte)(unsafe.Pointer(&slice[0]))[:length:length]
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, slice)
+	return buf.Bytes()
 }
 
 
@@ -688,10 +688,11 @@ func GetWorkers(c *fiber.Ctx) error {
 	}
 
 	type WorkerInfo struct {
-		ID          string             `json:"id"`
-		ConnectedAt string             `json:"connected_at"`
-		Uptime      string             `json:"uptime"`
-		Cameras     []WorkerCameraInfo `json:"cameras"`
+		ID           string             `json:"id"`
+		ConnectedAt  string             `json:"connected_at"`
+		Uptime       string             `json:"uptime"`
+		Cameras      []WorkerCameraInfo `json:"cameras"`
+		AvgProcessMs float64            `json:"avg_process_ms"`
 	}
 
 	result := make([]WorkerInfo, 0)
@@ -712,11 +713,16 @@ func GetWorkers(c *fiber.Ctx) error {
 
 		uptime := time.Since(w.connectedAt).Truncate(time.Second).String()
 
+		w.mu.Lock()
+		avgProcessMs := w.avgProcessMs
+		w.mu.Unlock()
+
 		result = append(result, WorkerInfo{
-			ID:          w.id,
-			ConnectedAt: w.connectedAt.Format(time.RFC3339),
-			Uptime:      uptime,
-			Cameras:     assignedCams,
+			ID:           w.id,
+			ConnectedAt:  w.connectedAt.Format(time.RFC3339),
+			Uptime:       uptime,
+			Cameras:      assignedCams,
+			AvgProcessMs: avgProcessMs,
 		})
 	}
 

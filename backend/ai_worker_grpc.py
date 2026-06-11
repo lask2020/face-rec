@@ -94,6 +94,10 @@ cooldowns_lock = threading.Lock()
 last_seen_camera = {}
 cameras_lock = threading.Lock()
 
+# Stats for average process time tracking
+stats_lock = threading.Lock()
+recent_process_times = []
+
 TRACK_TIMEOUT = 3.0  # seconds of inactivity before flushing
 TRACK_MAX_DURATION = 5.0  # max seconds a track can run before flushing
 COOLDOWN_DURATION = 30.0  # seconds
@@ -127,6 +131,7 @@ def add_cooldown(embedding):
 
 def track_flusher(send_queue, stop_event=None):
     logger.info("Background Face Track Flusher thread started.")
+    last_stats_sent = 0
     while True:
         if stop_event and stop_event.is_set():
             logger.info("Flusher stopping due to stop event.")
@@ -156,6 +161,19 @@ def track_flusher(send_queue, stop_event=None):
                     )]
                 )
                 send_queue.put(result)
+
+            # Periodically send metrics update (every 2 seconds)
+            if now - last_stats_sent > 2.0:
+                last_stats_sent = now
+                with stats_lock:
+                    if recent_process_times:
+                        avg_ms = sum(recent_process_times) / len(recent_process_times)
+                        result = facerec_pb2.InferenceResult(
+                            task_id="metrics",
+                            detections=[],
+                            process_time_ms=avg_ms
+                        )
+                        send_queue.put(result)
 
             # Clean up inactive cameras to log stop events
             inactive_timeout = 10.0
@@ -238,6 +256,7 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                     logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}")
                     
                     try:
+                        start_time = time.time()
                         # Decode image from JPEG bytes
                         nparr = np.frombuffer(image_data, np.uint8)
                         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -245,24 +264,36 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                         if img is None:
                             logger.error(f"Failed to decode JPEG image for task {task_id}")
                             if is_reg:
-                                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[]))
+                                duration_ms = (time.time() - start_time) * 1000
+                                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[], process_time_ms=duration_ms))
                             continue
                             
                         if is_reg:
                             # Registration mode: extract embedding and return immediately
-                            emb = face_engine.extract_embedding_from_image(img)
-                            if emb is not None:
+                            emb, err_msg = face_engine.extract_embedding_from_image(img)
+                            duration_ms = (time.time() - start_time) * 1000
+                            if err_msg is not None:
+                                logger.warning(f"Registration face rejected: {err_msg}")
+                                result = facerec_pb2.InferenceResult(
+                                    task_id=task_id,
+                                    detections=[],
+                                    error_message=err_msg,
+                                    process_time_ms=duration_ms
+                                )
+                                send_queue.put(result)
+                            elif emb is not None:
                                 result = facerec_pb2.InferenceResult(
                                     task_id=task_id,
                                     detections=[facerec_pb2.Detection(
                                         bbox=[0.0, 0.0, 0.0, 0.0],
                                         embedding=emb.tolist()
-                                    )]
+                                    )],
+                                    process_time_ms=duration_ms
                                 )
                                 send_queue.put(result)
                             else:
                                 logger.warning(f"No face detected in registration image for task {task_id}")
-                                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[]))
+                                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[], error_message="No face detected", process_time_ms=duration_ms))
                         else:
                             # Parse camera_id from task_id (cameraID_timestamp_uuid)
                             parts = task_id.split('_')
@@ -275,6 +306,14 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                 last_seen_camera[camera_id] = now_time
                             
                             faces = face_engine.detect_faces(img)
+                            
+                            duration_ms = (time.time() - start_time) * 1000
+                            logger.info(f"Processed frame for Camera {camera_id} in {duration_ms:.1f}ms - detected {len(faces)} face(s)")
+                            
+                            with stats_lock:
+                                recent_process_times.append(duration_ms)
+                                if len(recent_process_times) > 50:
+                                    recent_process_times.pop(0)
                             
                             with tracks_lock:
                                 for face in faces:

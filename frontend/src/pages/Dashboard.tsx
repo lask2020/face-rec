@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { Camera, StatsOverview, DetectionEvent, Person } from '../api/client';
 import StatsCard from '../components/StatsCard';
 import CameraFeed from '../components/CameraFeed';
+import ErrorBoundary from '../components/ErrorBoundary';
 import DetectionCard from '../components/DetectionCard';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Modal from '../components/Modal';
@@ -114,7 +115,9 @@ export default function Dashboard({ events }: DashboardProps) {
             <div className="camera-grid">
               {cameras.map((cam) => (
                 <div key={cam.id} className="camera-card animate-in">
-                  <CameraFeed cameraId={cam.id} isActive={cam.is_active} />
+                  <ErrorBoundary name={`Camera Feed (${cam.name})`}>
+                    <CameraFeed cameraId={cam.id} isActive={cam.is_active} />
+                  </ErrorBoundary>
                   <div className="camera-info">
                     <div>
                       <div className="camera-name">{cam.name}</div>

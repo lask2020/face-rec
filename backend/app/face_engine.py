@@ -214,41 +214,54 @@ class FaceEngine:
             logger.error(f"Face detection error: {e}")
             return []
 
-    def extract_embedding_from_image(self, img: np.ndarray) -> Optional[np.ndarray]:
+    def extract_embedding_from_image(self, img: np.ndarray) -> tuple[Optional[np.ndarray], Optional[str]]:
         """
-        Extract face embedding from an in-memory image array.
+        Extract face embedding from an in-memory image array with a strict quality gate.
 
         Args:
             img: OpenCV BGR image array
 
         Returns:
-            512-dim embedding or None if no face detected
+            Tuple of (512-dim embedding or None, error_message or None)
         """
         if self.model is None:
-            return None
+            return None, "Face model not initialized"
 
         faces = self.model.get(img)
         if not faces:
-            logger.warning("No face detected in image")
-            return None
+            return None, "No face detected in registration image"
 
-        # Filter to keep only frontal faces for registration (slightly more lenient threshold: 30 degrees)
-        frontal_faces = [f for f in faces if is_frontal_face(f, max_yaw=30.0, max_pitch=30.0, max_roll=30.0)]
-        if not frontal_faces:
-            logger.warning("No frontal face detected in registration image")
-            return None
+        # 1. Multiple Faces Gate
+        if len(faces) > 1:
+            return None, f"Multiple faces detected ({len(faces)} faces). Please upload a photo with only one person."
 
-        # Use the largest face (by bounding box area) among the frontal faces
-        largest_face = max(frontal_faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        face = faces[0]
 
-        embedding = largest_face.normed_embedding
+        # 2. Frontality Gate: Check yaw, pitch, roll (strict 15.0 degrees for registration)
+        pose = face.get("pose")
+        if pose is not None:
+            pitch, yaw, roll = pose
+            max_angle = 15.0
+            if abs(pitch) > max_angle or abs(yaw) > max_angle or abs(roll) > max_angle:
+                return None, f"Face is not looking straight (yaw: {abs(yaw):.1f}°, pitch: {abs(pitch):.1f}°, roll: {abs(roll):.1f}°). Maximum allowed is {max_angle}°."
+
+        # 3. Sharpness Gate: Check Laplacian variance (strict 60.0 threshold for registration)
+        bbox_list = face.bbox.tolist()
+        sharpness = compute_sharpness(img, bbox_list)
+        min_sharpness = 60.0
+        if sharpness < min_sharpness:
+            return None, f"Face image is too blurry (sharpness score: {sharpness:.1f}, minimum required: {min_sharpness:.1f}). Please upload a clearer photo."
+
+        # Normalize embedding for similarity search
+        embedding = face.normed_embedding
         if embedding is None:
-            embedding = largest_face.embedding
+            embedding = face.embedding
             norm = np.linalg.norm(embedding)
             if norm > 0:
                 embedding = embedding / norm
 
-        return embedding.astype(np.float32)
+        return embedding.astype(np.float32), None
+
 
 
 # Module-level singleton

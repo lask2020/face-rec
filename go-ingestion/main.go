@@ -206,6 +206,8 @@ func pushToRedis(ctx context.Context, camID uint, frame []byte) {
 	// Push to Redis Stream for AI processing
 	err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "image.queue",
+		MaxLen: 100,
+		Approx: true,
 		Values: map[string]interface{}{
 			"camera_id": camID,
 			"data":      frame,

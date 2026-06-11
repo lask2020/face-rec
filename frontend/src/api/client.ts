@@ -139,6 +139,7 @@ export interface WorkerInfo {
   connected_at: string;
   uptime: string;
   cameras: WorkerCameraInfo[];
+  avg_process_ms: number;
 }
 
 export interface WorkerList {

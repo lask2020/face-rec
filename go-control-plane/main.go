@@ -2,6 +2,9 @@ package main
 
 import (
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -15,6 +18,7 @@ func main() {
 		// Increase body limit for face image uploads
 		BodyLimit: 10 * 1024 * 1024,
 	})
+
 
 	app.Use(logger.New())
 	app.Use(cors.New())
@@ -69,7 +73,46 @@ func main() {
 	app.Get("/ws/events", websocket.New(EventsWebSocket))
 
 	log.Println("Go Control Plane starting on port 8000...")
-	if err := app.Listen(":8000"); err != nil {
-		log.Fatalf("Error starting server: %v", err)
+	
+	// Start Fiber REST server in background
+	go func() {
+		if err := app.Listen(":8000"); err != nil {
+			log.Printf("Fiber server listener error: %v", err)
+		}
+	}()
+
+	// Block main thread waiting for exit signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	sig := <-sigChan
+	log.Printf("Received signal: %v. Initiating graceful shutdown...", sig)
+
+	// 1. Shutdown Fiber App
+	log.Println("Shutting down Fiber REST server...")
+	if err := app.Shutdown(); err != nil {
+		log.Printf("Fiber shutdown error: %v", err)
 	}
+
+	// 2. Shutdown gRPC Server
+	log.Println("Shutting down gRPC Server...")
+	if grpcServer != nil {
+		grpcServer.GracefulStop()
+	}
+
+	// 3. Close Redis Connection
+	log.Println("Closing Redis connection...")
+	if RDB != nil {
+		RDB.Close()
+	}
+
+	// 4. Close DB Connection
+	log.Println("Closing Database connection...")
+	if DB != nil {
+		sqlDB, err := DB.DB()
+		if err == nil {
+			sqlDB.Close()
+		}
+	}
+
+	log.Println("Graceful shutdown completed successfully.")
 }

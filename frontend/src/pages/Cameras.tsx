@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { Camera, SSCameraInfo, SSConnectRequest } from '../api/client';
 import CameraFeed from '../components/CameraFeed';
+import ErrorBoundary from '../components/ErrorBoundary';
 import Modal from '../components/Modal';
 import LoadingSpinner from '../components/LoadingSpinner';
 
@@ -277,7 +278,9 @@ export default function Cameras() {
         <div className="camera-grid">
           {cameras.map((cam) => (
             <div key={cam.id} className="camera-card animate-in">
-              <CameraFeed cameraId={cam.id} isActive={cam.is_active} />
+              <ErrorBoundary name={`Camera Feed (${cam.name})`}>
+                <CameraFeed cameraId={cam.id} isActive={cam.is_active} />
+              </ErrorBoundary>
               <div className="camera-info">
                 <div>
                   <div className="camera-name">{cam.name}</div>

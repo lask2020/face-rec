@@ -17,6 +17,8 @@ message FrameTask {
 message InferenceResult {
   string task_id = 1;
   repeated Detection detections = 2;
+  string error_message = 3;
+  float process_time_ms = 4;
 }
 
 message Detection {

@@ -6,6 +6,7 @@ import PersonDetail from './pages/PersonDetail';
 import Cameras from './pages/Cameras';
 import Detections from './pages/Detections';
 import Workers from './pages/Workers';
+import ErrorBoundary from './components/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
 
 export default function App() {
@@ -13,14 +14,16 @@ export default function App() {
 
   return (
     <Layout wsConnected={connected}>
-      <Routes>
-        <Route path="/" element={<Dashboard events={events} />} />
-        <Route path="/persons" element={<Persons />} />
-        <Route path="/persons/:id" element={<PersonDetail />} />
-        <Route path="/cameras" element={<Cameras />} />
-        <Route path="/detections" element={<Detections events={events} />} />
-        <Route path="/workers" element={<Workers />} />
-      </Routes>
+      <ErrorBoundary name="App Routing">
+        <Routes>
+          <Route path="/" element={<Dashboard events={events} />} />
+          <Route path="/persons" element={<Persons />} />
+          <Route path="/persons/:id" element={<PersonDetail />} />
+          <Route path="/cameras" element={<Cameras />} />
+          <Route path="/detections" element={<Detections events={events} />} />
+          <Route path="/workers" element={<Workers />} />
+        </Routes>
+      </ErrorBoundary>
     </Layout>
   );
 }
