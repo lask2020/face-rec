@@ -90,6 +90,10 @@ tracks_lock = threading.Lock()
 cooldowns = []
 cooldowns_lock = threading.Lock()
 
+# Camera state and logs suppression
+last_seen_camera = {}
+cameras_lock = threading.Lock()
+
 TRACK_TIMEOUT = 3.0  # seconds of inactivity before flushing
 TRACK_MAX_DURATION = 5.0  # max seconds a track can run before flushing
 COOLDOWN_DURATION = 30.0  # seconds
@@ -152,6 +156,14 @@ def track_flusher(send_queue, stop_event=None):
                     )]
                 )
                 send_queue.put(result)
+
+            # Clean up inactive cameras to log stop events
+            inactive_timeout = 10.0
+            with cameras_lock:
+                for cam_id, last_ts in list(last_seen_camera.items()):
+                    if now - last_ts > inactive_timeout:
+                        logger.info(f"Stopped processing stream for Camera {cam_id} (inactive)")
+                        del last_seen_camera[cam_id]
         except Exception as e:
             logger.error(f"Error in track_flusher: {e}")
 
@@ -255,6 +267,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                             # Parse camera_id from task_id (cameraID_timestamp_uuid)
                             parts = task_id.split('_')
                             camera_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+                            
+                            now_time = time.time()
+                            with cameras_lock:
+                                if camera_id not in last_seen_camera:
+                                    logger.info(f"Started processing stream for Camera {camera_id}")
+                                last_seen_camera[camera_id] = now_time
                             
                             faces = face_engine.detect_faces(img)
                             

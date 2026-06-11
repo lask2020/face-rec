@@ -659,3 +659,70 @@ func ImportSSCameras(c *fiber.Ctx) error {
 		"cameras":  createdCameras,
 	})
 }
+
+// GetWorkers returns the list of active AI Workers and their assigned cameras.
+func GetWorkers(c *fiber.Ctx) error {
+	activeWorkersMu.Lock()
+	workersCopy := make([]*AIWorkerSession, len(activeWorkers))
+	copy(workersCopy, activeWorkers)
+	activeWorkersMu.Unlock()
+
+	cameraToWorkerMu.Lock()
+	camMapCopy := make(map[uint]string)
+	for k, v := range cameraToWorker {
+		camMapCopy[k] = v
+	}
+	cameraToWorkerMu.Unlock()
+
+	// Load cameras to map IDs to Names
+	var cameras []Camera
+	DB.Find(&cameras)
+	cameraNames := make(map[uint]string)
+	for _, cam := range cameras {
+		cameraNames[cam.ID] = cam.Name
+	}
+
+	type WorkerCameraInfo struct {
+		ID   uint   `json:"id"`
+		Name string `json:"name"`
+	}
+
+	type WorkerInfo struct {
+		ID          string             `json:"id"`
+		ConnectedAt string             `json:"connected_at"`
+		Uptime      string             `json:"uptime"`
+		Cameras     []WorkerCameraInfo `json:"cameras"`
+	}
+
+	result := make([]WorkerInfo, 0)
+	for _, w := range workersCopy {
+		assignedCams := make([]WorkerCameraInfo, 0)
+		for camID, workerID := range camMapCopy {
+			if workerID == w.id {
+				name, exists := cameraNames[camID]
+				if !exists {
+					name = fmt.Sprintf("Camera %d", camID)
+				}
+				assignedCams = append(assignedCams, WorkerCameraInfo{
+					ID:   camID,
+					Name: name,
+				})
+			}
+		}
+
+		uptime := time.Since(w.connectedAt).Truncate(time.Second).String()
+
+		result = append(result, WorkerInfo{
+			ID:          w.id,
+			ConnectedAt: w.connectedAt.Format(time.RFC3339),
+			Uptime:      uptime,
+			Cameras:     assignedCams,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"workers": result,
+		"total":   len(result),
+	})
+}
+

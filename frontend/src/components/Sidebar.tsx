@@ -5,6 +5,7 @@ const navItems = [
   { path: '/persons', icon: '👤', label: 'Face Management' },
   { path: '/cameras', icon: '📹', label: 'Cameras' },
   { path: '/detections', icon: '🔍', label: 'Detection Logs' },
+  { path: '/workers', icon: '🤖', label: 'AI Workers' },
 ];
 
 interface SidebarProps {

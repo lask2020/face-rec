@@ -73,3 +73,30 @@ func PublishStopCommand(cameraID uint) error {
 	payload := fmt.Sprintf("stop|%d|", cameraID)
 	return RDB.Publish(ctx, "worker.assign", payload).Err()
 }
+
+// RestartActiveCameras queries all cameras with is_active = true from DB and publishes start commands.
+func RestartActiveCameras() {
+	var activeCameras []Camera
+	if err := DB.Where("is_active = ?", true).Find(&activeCameras).Error; err != nil {
+		log.Printf("[Startup] Failed to query active cameras: %v", err)
+		return
+	}
+
+	if len(activeCameras) == 0 {
+		log.Println("[Startup] No active cameras to restart.")
+		return
+	}
+
+	log.Printf("[Startup] Found %d active cameras to restart. Waiting for services to settle...", len(activeCameras))
+	
+	// Wait a small moment to ensure services (Redis, ingestion) are fully ready
+	time.Sleep(3 * time.Second)
+
+	for _, cam := range activeCameras {
+		log.Printf("[Startup] Automatically restarting camera stream for '%s' (ID: %d, FPS: %d)...", cam.Name, cam.ID, cam.FPSProcess)
+		if err := PublishAssignment(cam.ID, cam.URL, cam.FPSProcess); err != nil {
+			log.Printf("[Startup] Failed to publish assignment for camera %d: %v", cam.ID, err)
+		}
+	}
+}
+

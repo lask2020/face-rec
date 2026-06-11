@@ -129,6 +129,23 @@ export interface StatsOverview {
   total_detections_today: number;
 }
 
+export interface WorkerCameraInfo {
+  id: number;
+  name: string;
+}
+
+export interface WorkerInfo {
+  id: string;
+  connected_at: string;
+  uptime: string;
+  cameras: WorkerCameraInfo[];
+}
+
+export interface WorkerList {
+  workers: WorkerInfo[];
+  total: number;
+}
+
 export interface DetectionEvent {
   type: string;
   person_id: number | null;
@@ -212,6 +229,10 @@ export const api = {
 
   getOverview: () =>
     request<StatsOverview>('/detections/overview'),
+
+  // Workers
+  listWorkers: () =>
+    request<WorkerList>('/workers'),
 
   // Surveillance Station
   ssTestConnection: (data: SSConnectRequest) =>

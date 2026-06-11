@@ -25,6 +25,9 @@ func main() {
 	InitQdrant()
 	StartGRPCServer()
 
+	// Automatically restart active cameras on boot
+	go RestartActiveCameras()
+
 	api := app.Group("/api")
 	
 	// Cameras
@@ -49,6 +52,9 @@ func main() {
 	api.Get("/detections", listDetections)
 	api.Get("/detections/stats", getDetectionStats)
 	api.Get("/detections/overview", getOverviewStats)
+
+	// Workers
+	api.Get("/workers", GetWorkers)
 
 	// Surveillance Station
 	api.Post("/surveillance-station/test", TestSSConnection)

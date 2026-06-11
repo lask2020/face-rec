@@ -20,8 +20,9 @@ import (
 )
 
 type AIWorkerSession struct {
-	stream facerec.FaceInferenceService_ProcessStreamServer
-	id     string
+	stream      facerec.FaceInferenceService_ProcessStreamServer
+	id          string
+	connectedAt time.Time
 }
 
 type PendingTask struct {
@@ -35,6 +36,10 @@ var (
 	activeWorkers   = make([]*AIWorkerSession, 0)
 	activeWorkersMu sync.Mutex
 	workerIndex     int
+
+	// Camera-to-Worker mapping for sticky routing
+	cameraToWorker   = make(map[uint]string)
+	cameraToWorkerMu sync.Mutex
 
 	// Pending tasks waiting for AI response
 	pendingTasks   = make(map[string]PendingTask)
@@ -75,8 +80,9 @@ func StartGRPCServer() {
 
 func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_ProcessStreamServer) error {
 	session := &AIWorkerSession{
-		stream: stream,
-		id:     uuid.New().String(),
+		stream:      stream,
+		id:          uuid.New().String(),
+		connectedAt: time.Now(),
 	}
 
 	registerWorker(session)
@@ -101,8 +107,10 @@ func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_
 
 func registerWorker(w *AIWorkerSession) {
 	activeWorkersMu.Lock()
-	defer activeWorkersMu.Unlock()
 	activeWorkers = append(activeWorkers, w)
+	activeWorkersMu.Unlock()
+
+	rebalanceWorkers()
 }
 
 func deregisterWorker(w *AIWorkerSession) {
@@ -114,6 +122,113 @@ func deregisterWorker(w *AIWorkerSession) {
 			break
 		}
 	}
+
+	// Clean up sticky assignments for this disconnected worker
+	cameraToWorkerMu.Lock()
+	defer cameraToWorkerMu.Unlock()
+	for camID, wID := range cameraToWorker {
+		if wID == w.id {
+			delete(cameraToWorker, camID)
+		}
+	}
+}
+
+func rebalanceWorkers() {
+	activeWorkersMu.Lock()
+	numWorkers := len(activeWorkers)
+	activeWorkersMu.Unlock()
+
+	if numWorkers <= 1 {
+		return
+	}
+
+	cameraToWorkerMu.Lock()
+	defer cameraToWorkerMu.Unlock()
+
+	numCameras := len(cameraToWorker)
+	if numCameras == 0 {
+		return
+	}
+
+	// Target limit (ceiling division C / N)
+	targetLimit := (numCameras + numWorkers - 1) / numWorkers
+	if targetLimit < 1 {
+		targetLimit = 1
+	}
+
+	log.Printf("[Rebalance] Rebalancing %d cameras across %d workers (target limit: %d per worker)", numCameras, numWorkers, targetLimit)
+
+	// Group assigned cameras by worker ID
+	workerAssignments := make(map[string][]uint)
+	for camID, wID := range cameraToWorker {
+		workerAssignments[wID] = append(workerAssignments[wID], camID)
+	}
+
+	for wID, camIDs := range workerAssignments {
+		if len(camIDs) > targetLimit {
+			numToRemove := len(camIDs) - targetLimit
+			log.Printf("[Rebalance] Worker %s has %d cameras (exceeds limit %d). Unassigning %d camera(s)...", wID, len(camIDs), targetLimit, numToRemove)
+			for i := 0; i < numToRemove; i++ {
+				camToRemove := camIDs[i]
+				delete(cameraToWorker, camToRemove)
+				log.Printf("[Rebalance] Unassigned Camera %d from Worker %s", camToRemove, wID)
+			}
+		}
+	}
+}
+
+func getWorkerForCamera(cameraID uint) *AIWorkerSession {
+	activeWorkersMu.Lock()
+	defer activeWorkersMu.Unlock()
+
+	if len(activeWorkers) == 0 {
+		return nil
+	}
+
+	cameraToWorkerMu.Lock()
+	defer cameraToWorkerMu.Unlock()
+
+	// Check if this camera is already assigned to an active worker
+	if workerID, exists := cameraToWorker[cameraID]; exists {
+		// Verify if the assigned worker is still active
+		for _, w := range activeWorkers {
+			if w.id == workerID {
+				return w
+			}
+		}
+		// If worker is no longer active, remove the stale mapping
+		delete(cameraToWorker, cameraID)
+	}
+
+	// Calculate current load per active worker
+	workerLoad := make(map[string]int)
+	for _, w := range activeWorkers {
+		workerLoad[w.id] = 0
+	}
+	for _, wID := range cameraToWorker {
+		if _, ok := workerLoad[wID]; ok {
+			workerLoad[wID]++
+		}
+	}
+
+	// Find the worker with the minimum load
+	var bestWorker *AIWorkerSession
+	minLoad := int(^uint(0) >> 1) // Max int
+
+	for _, w := range activeWorkers {
+		load := workerLoad[w.id]
+		if load < minLoad {
+			minLoad = load
+			bestWorker = w
+		}
+	}
+
+	if bestWorker != nil {
+		cameraToWorker[cameraID] = bestWorker.id
+		log.Printf("[Dispatcher] Assigned Camera %d to Worker %s (current load: %d cameras)", cameraID, bestWorker.id, minLoad+1)
+	}
+
+	return bestWorker
 }
 
 func getNextWorker() *AIWorkerSession {
@@ -395,11 +510,10 @@ func StartFrameDispatcher(ctx context.Context) {
 					data = val
 				}
 
-				// Dispatch to next AI worker
-				worker := getNextWorker()
+				// Dispatch sticky worker by camera ID
+				worker := getWorkerForCamera(cameraID)
 				if worker == nil {
-					// Put back or wait
-					log.Println("[Dispatcher] No worker available, skipped frame.")
+					log.Printf("[Dispatcher] No worker available for camera %d, skipped frame.", cameraID)
 					continue
 				}
 

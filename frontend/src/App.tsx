@@ -5,6 +5,7 @@ import Persons from './pages/Persons';
 import PersonDetail from './pages/PersonDetail';
 import Cameras from './pages/Cameras';
 import Detections from './pages/Detections';
+import Workers from './pages/Workers';
 import { useWebSocket } from './hooks/useWebSocket';
 
 export default function App() {
@@ -17,8 +18,10 @@ export default function App() {
         <Route path="/persons" element={<Persons />} />
         <Route path="/persons/:id" element={<PersonDetail />} />
         <Route path="/cameras" element={<Cameras />} />
-        <Route path="/detections" element={<Detections />} />
+        <Route path="/detections" element={<Detections events={events} />} />
+        <Route path="/workers" element={<Workers />} />
       </Routes>
     </Layout>
   );
 }
+

@@ -1,20 +1,77 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { Detection, Person, Camera } from '../api/client';
+import type { Detection, Person, Camera, DetectionEvent } from '../api/client';
 import LoadingSpinner from '../components/LoadingSpinner';
 import Modal from '../components/Modal';
 
-export default function Detections() {
+interface DetectionsProps {
+  events?: DetectionEvent[];
+}
+
+export default function Detections({ events = [] }: DetectionsProps) {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [lastProcessedEventTime, setLastProcessedEventTime] = useState<string>('');
 
   // Filters
   const [personFilter, setPersonFilter] = useState<string>('');
   const [cameraFilter, setCameraFilter] = useState<string>('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+
+  // Live WebSocket updates
+  useEffect(() => {
+    if (!events || events.length === 0) return;
+    const latestEvent = events[0];
+
+    // Avoid double processing the same event
+    if (latestEvent.timestamp === lastProcessedEventTime) return;
+    setLastProcessedEventTime(latestEvent.timestamp);
+
+    // Apply active filters to the incoming live event
+    if (personFilter) {
+      if (personFilter === 'null') {
+        if (latestEvent.person_id !== null) return;
+      } else if (String(latestEvent.person_id) !== personFilter) {
+        return;
+      }
+    }
+    if (cameraFilter && String(latestEvent.camera_id) !== cameraFilter) {
+      return;
+    }
+
+    // Increment overall total count
+    setTotal((t) => t + 1);
+
+    // Only inject in current view if we are on page 1
+    if (page !== 1) return;
+
+    // Build Detection object from event
+    const newDetection: Detection = {
+      id: Math.floor(Date.now() + Math.random() * 1000),
+      person_id: latestEvent.person_id,
+      person_name: latestEvent.person_name,
+      camera_id: latestEvent.camera_id,
+      camera_name: latestEvent.camera_name,
+      confidence: latestEvent.confidence,
+      snapshot_url: latestEvent.snapshot_url,
+      face_crop_url: latestEvent.snapshot_url?.replace("cam_", "crop_cam_").replace(".jpg", "_0.jpg") || null,
+      detected_at: latestEvent.timestamp,
+    };
+
+    setDetections((prev) => {
+      const exists = prev.some(
+        (d) =>
+          d.camera_id === newDetection.camera_id &&
+          new Date(d.detected_at).getTime() === new Date(newDetection.detected_at).getTime()
+      );
+      if (exists) return prev;
+      return [newDetection, ...prev].slice(0, limit);
+    });
+  }, [events, page, personFilter, cameraFilter, lastProcessedEventTime]);
+
 
   // Data for filter dropdowns
   const [persons, setPersons] = useState<Person[]>([]);
