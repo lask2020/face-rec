@@ -15,14 +15,79 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Minimum Laplacian variance for a face crop to be considered "sharp enough".
+# Higher values are stricter. Typical range: 30-100 depending on camera quality.
+SHARPNESS_THRESHOLD = float(os.getenv("FACE_SHARPNESS_THRESHOLD", "50.0"))
+
+
+def compute_sharpness(image: np.ndarray, bbox: list) -> float:
+    """
+    Compute a sharpness score for a face crop using Laplacian variance.
+
+    The Laplacian highlights edges; a blurry image has very few edges,
+    producing a low variance.  A sharp image produces a high variance.
+
+    Args:
+        image: Full BGR frame (numpy array).
+        bbox: [x1, y1, x2, y2] bounding box of the face.
+
+    Returns:
+        Laplacian variance (float).  Higher = sharper.
+    """
+    h, w = image.shape[:2]
+    x1 = max(0, int(bbox[0]))
+    y1 = max(0, int(bbox[1]))
+    x2 = min(w, int(bbox[2]))
+    y2 = min(h, int(bbox[3]))
+
+    crop = image[y1:y2, x1:x2]
+    if crop.size == 0:
+        return 0.0
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    return float(laplacian.var())
+
+
+def compute_frontality(face, max_yaw: float = 20.0, max_pitch: float = 20.0, max_roll: float = 20.0) -> float:
+    """
+    Compute a 0.0–1.0 frontality score from InsightFace pose angles.
+
+    1.0 = perfectly frontal (yaw ≈ pitch ≈ roll ≈ 0).
+    0.0 = face at the maximum allowed angle threshold.
+
+    The score is the average of per-axis ratios:
+        axis_score = 1.0 - clamp(|angle| / max_angle, 0, 1)
+
+    Args:
+        face: InsightFace detection object with .pose attribute.
+        max_yaw:   Maximum yaw   considered frontal (degrees).
+        max_pitch:  Maximum pitch considered frontal (degrees).
+        max_roll:   Maximum roll  considered frontal (degrees).
+
+    Returns:
+        Frontality score (float, 0.0–1.0).  Higher = more frontal.
+    """
+    pose = face.get("pose")
+    if pose is None:
+        return 1.0  # Assume frontal if pose estimation unavailable
+
+    pitch, yaw, roll = pose
+    yaw_score = 1.0 - min(abs(yaw) / max_yaw, 1.0)
+    pitch_score = 1.0 - min(abs(pitch) / max_pitch, 1.0)
+    roll_score = 1.0 - min(abs(roll) / max_roll, 1.0)
+    return (yaw_score + pitch_score + roll_score) / 3.0
+
 
 class FaceResult:
     """Result of a face detection."""
 
-    def __init__(self, bbox: list, embedding: np.ndarray, det_score: float):
+    def __init__(self, bbox: list, embedding: np.ndarray, det_score: float, sharpness: float = 0.0, frontality: float = 1.0):
         self.bbox = bbox  # [x1, y1, x2, y2]
         self.embedding = embedding  # 512-dim normalized vector
         self.det_score = det_score  # Detection confidence
+        self.sharpness = sharpness  # Laplacian variance of the face crop (higher = sharper)
+        self.frontality = frontality  # 0.0–1.0 pose frontality score (higher = more frontal)
 
 
 def is_frontal_face(face, max_yaw: float = 20.0, max_pitch: float = 20.0, max_roll: float = 20.0) -> bool:
@@ -128,11 +193,20 @@ class FaceEngine:
                     if norm > 0:
                         embedding = embedding / norm
 
+                # Compute sharpness score for best-frame selection
+                bbox_list = face.bbox.tolist()
+                sharpness = compute_sharpness(frame, bbox_list)
+
+                # Compute frontality score (how straight the face is looking)
+                frontality = compute_frontality(face, max_yaw=20.0, max_pitch=20.0, max_roll=20.0)
+
                 results.append(
                     FaceResult(
-                        bbox=face.bbox.tolist(),
+                        bbox=bbox_list,
                         embedding=embedding.astype(np.float32),
                         det_score=float(face.det_score),
+                        sharpness=sharpness,
+                        frontality=frontality,
                     )
                 )
             return results

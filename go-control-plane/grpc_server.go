@@ -286,6 +286,19 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 
 		DB.Create(&logEntry)
 		recorded++
+
+		// Broadcast to UI via WebSockets for each detection event
+		payload := fiber.Map{
+			"type":         "detection",
+			"person_id":    personID,
+			"person_name":  logEntry.PersonName,
+			"camera_id":    task.CameraID,
+			"camera_name":  logEntry.CameraName,
+			"confidence":   score,
+			"snapshot_url": logEntry.SnapshotPath,
+			"timestamp":    time.UnixMilli(task.Timestamp).Format(time.RFC3339),
+		}
+		BroadcastDetection(payload)
 	}
 
 	// 3. Draw bounding boxes on frame copy
@@ -305,15 +318,6 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 			log.Printf("[gRPC] Failed to upload snapshot %s to S3: %v", filename, err)
 		}
 	}
-
-	// 5. Broadcast to UI via WebSockets
-	payload := fiber.Map{
-		"camera_id":     task.CameraID,
-		"timestamp":     task.Timestamp,
-		"snapshot_path": filename,
-		"detections":    uiDetections,
-	}
-	BroadcastDetection(payload)
 
 	if recorded > 0 {
 		log.Printf("[Camera %d] Recorded %d detections.", task.CameraID, recorded)

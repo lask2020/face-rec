@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import facerec_pb2
 import facerec_pb2_grpc
-from app.face_engine import face_engine
+from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 
 # Set up logging
 logging.basicConfig(
@@ -28,7 +28,7 @@ logger = logging.getLogger("AI_Worker_gRPC")
 class FaceTrack:
     """Represents a tracked face on a camera over a short buffering window."""
 
-    def __init__(self, camera_id, bbox, embedding, task_id, image_bytes):
+    def __init__(self, camera_id, bbox, embedding, task_id, image_bytes, sharpness: float = 0.0, frontality: float = 1.0):
         self.camera_id = camera_id
         self.track_id = str(uuid.uuid4())
         self.bbox = bbox
@@ -36,18 +36,50 @@ class FaceTrack:
         self.task_id = task_id
         self.image_bytes = image_bytes
         self.face_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        self.sharpness = sharpness
+        self.frontality = frontality
+        self.quality_score = self.face_area * self.frontality
         
         self.first_seen = time.time()
         self.last_seen = time.time()
 
-    def update(self, bbox, embedding, task_id, image_bytes):
+    def update(self, bbox, embedding, task_id, image_bytes, sharpness: float = 0.0, frontality: float = 1.0):
+        """Update the track's best frame using sharpness-gated + quality score selection.
+
+        Quality score = face_area × frontality.
+        This favors frames where the face is both large AND looking straight.
+
+        Strategy:
+        1. If the new frame is sharp and the current best is NOT sharp,
+           always replace (sharp beats blurry regardless of quality).
+        2. If both are sharp (or both are blurry), pick the one with
+           the higher quality score (area × frontality).
+        3. If the current best is sharp and the new frame is NOT,
+           keep the current best (don't replace sharp with blurry).
+        """
         area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-        if area > self.face_area:
+        new_quality = area * frontality
+        new_is_sharp = sharpness >= SHARPNESS_THRESHOLD
+        cur_is_sharp = self.sharpness >= SHARPNESS_THRESHOLD
+
+        should_replace = False
+        if new_is_sharp and not cur_is_sharp:
+            # New frame is sharp, current is blurry -> always replace
+            should_replace = True
+        elif new_is_sharp == cur_is_sharp:
+            # Both sharp or both blurry -> pick higher quality score
+            should_replace = new_quality > self.quality_score
+        # else: current is sharp, new is blurry -> keep current
+
+        if should_replace:
             self.bbox = bbox
             self.embedding = embedding
             self.task_id = task_id
             self.image_bytes = image_bytes
             self.face_area = area
+            self.sharpness = sharpness
+            self.frontality = frontality
+            self.quality_score = new_quality
         self.last_seen = time.time()
 
 
@@ -109,7 +141,7 @@ def track_flusher(send_queue, stop_event=None):
                         del active_tracks[key]
                         
             for track in to_flush:
-                logger.info(f"Flushing best face track for camera {track.camera_id} (Face Area: {track.face_area})")
+                logger.info(f"Flushing best face track for camera {track.camera_id} (Area: {track.face_area:.0f}, Sharpness: {track.sharpness:.1f}, Frontality: {track.frontality:.2f}, Quality: {track.quality_score:.0f})")
                 add_cooldown(track.embedding)
                 
                 result = facerec_pb2.InferenceResult(
@@ -230,6 +262,8 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                 for face in faces:
                                     emb = face.embedding
                                     bbox = face.bbox
+                                    sharpness = face.sharpness
+                                    frontality = face.frontality
                                     
                                     # Check if on cooldown
                                     if is_on_cooldown(emb):
@@ -245,10 +279,10 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                                 break
                                                 
                                     if matched_track:
-                                        matched_track.update(bbox, emb, task_id, image_data)
+                                        matched_track.update(bbox, emb, task_id, image_data, sharpness, frontality)
                                     else:
                                         # Create new track
-                                        new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data)
+                                        new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality)
                                         active_tracks[new_track.track_id] = new_track
                                         
                     except Exception as ex:

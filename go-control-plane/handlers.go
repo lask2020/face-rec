@@ -74,7 +74,7 @@ func StartCameraStream(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "Camera not found"})
 	}
 
-	if err := PublishAssignment(uint(id), camera.URL); err != nil {
+	if err := PublishAssignment(uint(id), camera.URL, camera.FPSProcess); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to publish start command"})
 	}
 

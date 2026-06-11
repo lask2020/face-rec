@@ -30,6 +30,7 @@ export default function CameraFeed({ cameraId, isActive }: CameraFeedProps) {
   const mountedRef = useRef(true);
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const objectUrlRef = useRef<string | null>(null);
 
   const streamName = `cam_${cameraId}`;
 
@@ -56,9 +57,12 @@ export default function CameraFeed({ cameraId, isActive }: CameraFeedProps) {
     const ms = new MediaSource();
     msRef.current = ms;
 
+    const url = URL.createObjectURL(ms);
+    objectUrlRef.current = url;
+
     if (videoRef.current) {
       videoRef.current.srcObject = null;
-      videoRef.current.src = URL.createObjectURL(ms);
+      videoRef.current.src = url;
     }
 
     const sendMseRequest = () => {
@@ -85,6 +89,10 @@ export default function CameraFeed({ cameraId, isActive }: CameraFeedProps) {
           const mimeCodec = msg.value;
 
           if (MediaSource.isTypeSupported(mimeCodec)) {
+            if (ms.sourceBuffers.length > 0 || bufferRef.current) {
+              console.log(`[Camera ${cameraId}] SourceBuffer already exists, skipping creation`);
+              return;
+            }
             try {
               const sb = ms.addSourceBuffer(mimeCodec);
               bufferRef.current = sb;
@@ -196,6 +204,14 @@ export default function CameraFeed({ cameraId, isActive }: CameraFeedProps) {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
       videoRef.current.src = '';
+    }
+    if (objectUrlRef.current) {
+      try {
+        URL.revokeObjectURL(objectUrlRef.current);
+      } catch (e) {
+        // ignore
+      }
+      objectUrlRef.current = null;
     }
     setConnected(false);
   }

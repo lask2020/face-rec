@@ -87,11 +87,35 @@ graph TD
        - rtsp://your-camera-url
    ```
 
-2. **สั่งรันระบบผ่าน Docker Compose**
+2. **สั่งรันและจัดการระบบผ่านสคริปต์อำนวยความสะดวก (deploy.sh)**
+   คุณสามารถจัดการและ Deploy บริการต่างๆ ได้ง่ายผ่านสคริปต์ `deploy.sh`:
+   ```bash
+   # เริ่มต้นใช้งานโดยให้สิทธิ์การรัน (ทำครั้งแรกครั้งเดียว)
+   chmod +x deploy.sh
+
+   # 1. สั่งรันระบบทั้งหมดแบบ Full Redeploy (down, build, และ start)
+   ./deploy.sh
+   
+   # 2. ดูสถานะคอนเทนเนอร์ทั้งหมด
+   ./deploy.sh status
+   
+   # 3. ดู Logs การทำงานทั้งหมด หรือแยกบริการ
+   ./deploy.sh logs
+   ./deploy.sh logs ai-worker
+   
+   # 4. สั่ง rebuild และ redeploy เฉพาะบางบริการ (เช่น เมื่อมีการแก้ไขโค้ด)
+   ./deploy.sh ai-worker
+   ./deploy.sh control-plane
+   ./deploy.sh ingestion
+   ./deploy.sh frontend
+   ```
+   
+   หรือหากต้องการรันด้วย Docker Compose แบบดั้งเดิม:
    ```bash
    docker compose up --build -d
    ```
-   คำสั่งนี้จะทำการ build อิมเมจของ Frontend, Go Control Plane, Go Ingestion, และ Python AI Worker รวมถึงดึงอิมเมจของฐานข้อมูลต่างๆ
+   คำสั่งเหล่านี้จะทำการ build อิมเมจของ Frontend, Go Control Plane, Go Ingestion, และ Python AI Worker รวมถึงดึงอิมเมจของฐานข้อมูลต่างๆ ที่จำเป็น
+
 
 3. **พอร์ตที่เปิดให้บริการ (Port Map)**
    - 💻 **Frontend Dashboard**: http://localhost (Port 80)

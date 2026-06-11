@@ -64,8 +64,8 @@ func InitRedis() {
 	log.Println("Redis initialized.")
 }
 
-func PublishAssignment(cameraID uint, rtspURL string) error {
-	payload := fmt.Sprintf("start|%d|%s", cameraID, rtspURL)
+func PublishAssignment(cameraID uint, rtspURL string, fps int) error {
+	payload := fmt.Sprintf("start|%d|%s|%d", cameraID, rtspURL, fps)
 	return RDB.Publish(ctx, "worker.assign", payload).Err()
 }
 

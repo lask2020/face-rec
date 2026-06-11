@@ -44,7 +44,7 @@ func main() {
 
 	ch := pubsub.Channel()
 	for msg := range ch {
-		parts := strings.SplitN(msg.Payload, "|", 3)
+		parts := strings.SplitN(msg.Payload, "|", 4)
 		if len(parts) < 3 {
 			log.Printf("Invalid message: %s", msg.Payload)
 			continue
@@ -55,9 +55,17 @@ func main() {
 		camID := uint(camID64)
 		rtspURL := parts[2]
 
+		// Parse FPS from 4th field (default: 2 for backward compat)
+		fps := 2
+		if len(parts) >= 4 {
+			if parsed, err := strconv.Atoi(parts[3]); err == nil && parsed > 0 {
+				fps = parsed
+			}
+		}
+
 		switch action {
 		case "start":
-			handleStart(camID, rtspURL)
+			handleStart(camID, rtspURL, fps)
 		case "stop":
 			handleStop(camID)
 		default:
@@ -66,7 +74,7 @@ func main() {
 	}
 }
 
-func handleStart(camID uint, rtspURL string) {
+func handleStart(camID uint, rtspURL string, fps int) {
 	activeMutex.Lock()
 	defer activeMutex.Unlock()
 
@@ -88,7 +96,9 @@ func handleStart(camID uint, rtspURL string) {
 		log.Printf("[Camera %d] Registered in go2rtc as '%s'", camID, streamName)
 	}
 
-	go captureLoop(ictx, camID, streamName, 2) // Capture every 2 seconds
+	// Convert FPS to millisecond interval (e.g. 3 fps -> 333ms)
+	intervalMs := 1000 / fps
+	go captureLoop(ictx, camID, streamName, intervalMs)
 }
 
 func handleStop(camID uint) {
@@ -130,10 +140,10 @@ func registerStream(name, sourceURL string) error {
 // 1. go2rtc handles the RTSP connection (persistent, no reconnection overhead)
 // 2. go2rtc decodes exactly 1 frame when snapshot is requested
 // 3. The ingestion worker just does an HTTP GET — no ffmpeg subprocess needed
-func captureLoop(ctx context.Context, camID uint, streamName string, intervalSec int) {
-	log.Printf("[Camera %d] Starting snapshot capture every %ds from go2rtc stream '%s'", camID, intervalSec, streamName)
+func captureLoop(ctx context.Context, camID uint, streamName string, intervalMs int) {
+	log.Printf("[Camera %d] Starting snapshot capture every %dms from go2rtc stream '%s'", camID, intervalMs, streamName)
 
-	interval := time.Duration(intervalSec) * time.Second
+	interval := time.Duration(intervalMs) * time.Millisecond
 	client := &http.Client{Timeout: 10 * time.Second}
 	snapshotURL := fmt.Sprintf("%s/api/frame.jpeg?src=%s", go2rtcURL, streamName)
 
