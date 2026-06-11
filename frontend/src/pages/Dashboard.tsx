@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { Camera, StatsOverview, DetectionEvent } from '../api/client';
+import type { Camera, StatsOverview, DetectionEvent, Person } from '../api/client';
 import StatsCard from '../components/StatsCard';
 import CameraFeed from '../components/CameraFeed';
 import DetectionCard from '../components/DetectionCard';
 import LoadingSpinner from '../components/LoadingSpinner';
+import Modal from '../components/Modal';
 
 interface DashboardProps {
   events: DetectionEvent[];
@@ -14,6 +15,9 @@ export default function Dashboard({ events }: DashboardProps) {
   const [stats, setStats] = useState<StatsOverview | null>(null);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedEvent, setSelectedEvent] = useState<DetectionEvent | null>(null);
+  const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
+  const [loadingPerson, setLoadingPerson] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -21,6 +25,21 @@ export default function Dashboard({ events }: DashboardProps) {
     const timer = setInterval(loadData, 30000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (selectedEvent && selectedEvent.person_id) {
+      setLoadingPerson(true);
+      api.getPerson(selectedEvent.person_id)
+        .then((p) => setSelectedPerson(p))
+        .catch((err) => {
+          console.error('Failed to load person details:', err);
+          setSelectedPerson(null);
+        })
+        .finally(() => setLoadingPerson(false));
+    } else {
+      setSelectedPerson(null);
+    }
+  }, [selectedEvent]);
 
   async function loadData() {
     try {
@@ -127,12 +146,133 @@ export default function Dashboard({ events }: DashboardProps) {
               </div>
             ) : (
               events.slice(0, 20).map((event, i) => (
-                <DetectionCard key={`${event.timestamp}-${i}`} event={event} />
+                <DetectionCard 
+                  key={`${event.timestamp}-${i}`} 
+                  event={event} 
+                  onClick={() => setSelectedEvent(event)}
+                />
               ))
             )}
           </div>
         </div>
       </div>
+
+      {/* Snapshot Modal */}
+      {selectedEvent && (
+        <Modal 
+          title="Detection Details" 
+          onClose={() => setSelectedEvent(null)}
+          size="lg"
+        >
+          <div className="detection-view-layout">
+            {/* Left Column: Snapshot image */}
+            <div className="snapshot-side">
+              <span className="person-side-label">Captured Frame</span>
+              {selectedEvent.snapshot_url && (
+                <div className="snapshot-modal">
+                  <img src={selectedEvent.snapshot_url} alt="Detection snapshot" />
+                </div>
+              )}
+            </div>
+
+            {/* Right Column: Person Info & Registered Face */}
+            <div className="person-side">
+              {/* Face Verification Section */}
+              <div className="person-side-field">
+                <span className="person-side-label">Face Verification</span>
+                <div style={{ display: 'flex', gap: '16px', marginTop: '8px', marginBottom: '16px' }}>
+                  {/* Detected Face */}
+                  {selectedEvent.snapshot_url && (
+                    <div>
+                      <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Detected</span>
+                      <div className="person-side-face-item" style={{ width: '80px', height: '80px' }}>
+                        <img 
+                          src={selectedEvent.snapshot_url.replace("cam_", "crop_cam_").replace(".jpg", "_0.jpg")} 
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = selectedEvent.snapshot_url || '';
+                          }}
+                          alt="Detected face" 
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Registered Face */}
+                  {selectedEvent.person_id && (
+                    <div>
+                      <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Registered</span>
+                      <div className="person-side-face-item" style={{ width: '80px', height: '80px' }}>
+                        {loadingPerson ? (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>...</div>
+                        ) : selectedPerson && selectedPerson.faces && selectedPerson.faces.length > 0 ? (
+                          <img src={selectedPerson.faces[0].image_url} alt="Registered face" />
+                        ) : (
+                          <div className="person-side-avatar-placeholder" style={{ width: '100%', height: '100%', margin: 0, borderRadius: 'var(--radius-md)', fontSize: '20px' }}>?</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {selectedEvent.person_id ? (
+                <>
+                  <div className="person-side-title">👤 Registered Person</div>
+                  <div className="person-side-info" style={{ marginTop: '8px' }}>
+                    <div className="person-side-field">
+                      <span className="person-side-label">Name</span>
+                      <span className="person-side-value">{selectedPerson?.name || selectedEvent.person_name}</span>
+                    </div>
+                    <div className="person-side-field">
+                      <span className="person-side-label">Department</span>
+                      <span className="person-side-value">{selectedPerson?.department || 'No department'}</span>
+                    </div>
+                    {selectedPerson?.notes && (
+                      <div className="person-side-field">
+                        <span className="person-side-label">Notes</span>
+                        <span className="person-side-value" style={{ fontSize: '13px', lineHeight: 1.4 }}>
+                          {selectedPerson.notes}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="person-side-title">❓ Unknown Person</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: '10px' }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'left' }}>
+                      This face was not recognized as any registered person in the database.
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {/* General Metadata */}
+              <div className="person-side-info" style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                <div className="person-side-field">
+                  <span className="person-side-label">Camera</span>
+                  <span className="person-side-value">📹 {selectedEvent.camera_name}</span>
+                </div>
+                <div className="person-side-field">
+                  <span className="person-side-label">Detection Time</span>
+                  <span className="person-side-value" style={{ fontFamily: 'var(--font-mono)', fontSize: '13px' }}>
+                    {new Date(selectedEvent.timestamp).toLocaleString()}
+                  </span>
+                </div>
+                <div className="person-side-field">
+                  <span className="person-side-label">Confidence Score</span>
+                  <span className={`detection-confidence ${
+                    selectedEvent.confidence >= 0.7 ? 'high' : selectedEvent.confidence >= 0.4 ? 'medium' : 'low'
+                  }`} style={{ alignSelf: 'flex-start' }}>
+                    {(selectedEvent.confidence * 100).toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
