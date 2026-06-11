@@ -24,6 +24,7 @@ type AIWorkerSession struct {
 	id           string
 	connectedAt  time.Time
 	avgProcessMs float64
+	isPaused     bool
 	mu           sync.Mutex
 }
 
@@ -158,8 +159,24 @@ func deregisterWorker(w *AIWorkerSession) {
 
 func rebalanceWorkers() {
 	activeWorkersMu.Lock()
-	numWorkers := len(activeWorkers)
+	numWorkers := 0
+	for _, w := range activeWorkers {
+		w.mu.Lock()
+		if !w.isPaused {
+			numWorkers++
+		}
+		w.mu.Unlock()
+	}
 	activeWorkersMu.Unlock()
+
+	if numWorkers == 0 {
+		cameraToWorkerMu.Lock()
+		for k := range cameraToWorker {
+			delete(cameraToWorker, k)
+		}
+		cameraToWorkerMu.Unlock()
+		return
+	}
 
 	if numWorkers <= 1 {
 		return
@@ -179,7 +196,7 @@ func rebalanceWorkers() {
 		targetLimit = 1
 	}
 
-	log.Printf("[Rebalance] Rebalancing %d cameras across %d workers (target limit: %d per worker)", numCameras, numWorkers, targetLimit)
+	log.Printf("[Rebalance] Rebalancing %d cameras across %d active workers (target limit: %d per worker)", numCameras, numWorkers, targetLimit)
 
 	// Group assigned cameras by worker ID
 	workerAssignments := make(map[string][]uint)
@@ -211,23 +228,38 @@ func getWorkerForCamera(cameraID uint) *AIWorkerSession {
 	cameraToWorkerMu.Lock()
 	defer cameraToWorkerMu.Unlock()
 
-	// Check if this camera is already assigned to an active worker
+	// Check if this camera is already assigned to an active, non-paused worker
 	if workerID, exists := cameraToWorker[cameraID]; exists {
-		// Verify if the assigned worker is still active
+		// Verify if the assigned worker is still active and not paused
 		for _, w := range activeWorkers {
-			if w.id == workerID {
+			w.mu.Lock()
+			paused := w.isPaused
+			w.mu.Unlock()
+			if w.id == workerID && !paused {
 				return w
 			}
 		}
-		// If worker is no longer active, remove the stale mapping
+		// If worker is no longer active or is paused, remove the stale/paused mapping
 		delete(cameraToWorker, cameraID)
 	}
 
-	// Calculate current load per active worker
+	// Calculate current load per active, non-paused worker
 	workerLoad := make(map[string]int)
+	nonPausedWorkersExist := false
 	for _, w := range activeWorkers {
-		workerLoad[w.id] = 0
+		w.mu.Lock()
+		paused := w.isPaused
+		w.mu.Unlock()
+		if !paused {
+			workerLoad[w.id] = 0
+			nonPausedWorkersExist = true
+		}
 	}
+
+	if !nonPausedWorkersExist {
+		return nil
+	}
+
 	for _, wID := range cameraToWorker {
 		if _, ok := workerLoad[wID]; ok {
 			workerLoad[wID]++
@@ -239,6 +271,12 @@ func getWorkerForCamera(cameraID uint) *AIWorkerSession {
 	minLoad := int(^uint(0) >> 1) // Max int
 
 	for _, w := range activeWorkers {
+		w.mu.Lock()
+		paused := w.isPaused
+		w.mu.Unlock()
+		if paused {
+			continue
+		}
 		load := workerLoad[w.id]
 		if load < minLoad {
 			minLoad = load
@@ -260,9 +298,59 @@ func getNextWorker() *AIWorkerSession {
 	if len(activeWorkers) == 0 {
 		return nil
 	}
-	worker := activeWorkers[workerIndex%len(activeWorkers)]
+	// Filter to non-paused workers
+	available := make([]*AIWorkerSession, 0)
+	for _, w := range activeWorkers {
+		w.mu.Lock()
+		paused := w.isPaused
+		w.mu.Unlock()
+		if !paused {
+			available = append(available, w)
+		}
+	}
+	if len(available) == 0 {
+		return nil
+	}
+	worker := available[workerIndex%len(available)]
 	workerIndex++
 	return worker
+}
+
+func ToggleWorkerPause(workerID string) (bool, error) {
+	activeWorkersMu.Lock()
+	var targetWorker *AIWorkerSession
+	for _, w := range activeWorkers {
+		if w.id == workerID {
+			targetWorker = w
+			break
+		}
+	}
+	activeWorkersMu.Unlock()
+
+	if targetWorker == nil {
+		return false, fmt.Errorf("worker not found")
+	}
+
+	targetWorker.mu.Lock()
+	targetWorker.isPaused = !targetWorker.isPaused
+	newPausedState := targetWorker.isPaused
+	targetWorker.mu.Unlock()
+
+	// If paused, clear its camera assignments so they can be re-dispatched
+	if newPausedState {
+		cameraToWorkerMu.Lock()
+		for camID, wID := range cameraToWorker {
+			if wID == workerID {
+				delete(cameraToWorker, camID)
+			}
+		}
+		cameraToWorkerMu.Unlock()
+	}
+
+	// Rebalance active cameras across non-paused workers
+	rebalanceWorkers()
+
+	return newPausedState, nil
 }
 
 // SendRegistrationTask sends a face image to a worker for embedding extraction

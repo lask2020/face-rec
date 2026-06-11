@@ -31,6 +31,16 @@ export default function Workers() {
     }
   }
 
+  async function handleTogglePause(id: string) {
+    try {
+      await api.toggleWorkerPause(id);
+      loadData();
+    } catch (err) {
+      console.error('Failed to toggle worker pause:', err);
+      alert(err instanceof Error ? err.message : 'Failed to toggle worker pause');
+    }
+  }
+
   // Calculate unique assigned cameras count across all workers
   const totalAssignedCameras = workers.reduce((sum, w) => sum + (w.cameras?.length || 0), 0);
 
@@ -94,7 +104,7 @@ export default function Workers() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: '20px' }}>
           {workers.map((worker) => (
-            <div key={worker.id} className="card animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: '3px solid var(--accent-blue)' }}>
+            <div key={worker.id} className="card animate-in" style={{ display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: worker.is_paused ? '3px solid var(--text-muted, #6b7280)' : '3px solid var(--accent-blue)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Worker ID</div>
@@ -102,7 +112,25 @@ export default function Workers() {
                     {worker.id}
                   </div>
                 </div>
-                <span className="camera-badge online" style={{ flexShrink: 0 }}>Online</span>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', flexShrink: 0 }}>
+                  <span className={worker.is_paused ? "camera-badge offline" : "camera-badge online"}>
+                    {worker.is_paused ? 'Paused' : 'Online'}
+                  </span>
+                  <button
+                    className="btn btn-sm"
+                    style={{
+                      fontSize: '11px',
+                      padding: '3px 8px',
+                      height: 'auto',
+                      background: worker.is_paused ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                      color: worker.is_paused ? 'var(--accent-green, #10b981)' : 'var(--accent-red, #ef4444)',
+                      border: worker.is_paused ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(239,68,68,0.3)',
+                    }}
+                    onClick={() => handleTogglePause(worker.id)}
+                  >
+                    {worker.is_paused ? '▶ Resume' : '⏸ Pause'}
+                  </button>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', background: 'rgba(255,255,255,0.02)', padding: '10px 14px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>

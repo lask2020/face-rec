@@ -140,6 +140,7 @@ export interface WorkerInfo {
   uptime: string;
   cameras: WorkerCameraInfo[];
   avg_process_ms: number;
+  is_paused: boolean;
 }
 
 export interface WorkerList {
@@ -234,6 +235,9 @@ export const api = {
   // Workers
   listWorkers: () =>
     request<WorkerList>('/workers'),
+
+  toggleWorkerPause: (id: string) =>
+    request<{ id: string; is_paused: boolean }>(`/workers/${id}/toggle-pause`, { method: 'POST' }),
 
   // Surveillance Station
   ssTestConnection: (data: SSConnectRequest) =>

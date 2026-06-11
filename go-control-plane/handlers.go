@@ -693,6 +693,7 @@ func GetWorkers(c *fiber.Ctx) error {
 		Uptime       string             `json:"uptime"`
 		Cameras      []WorkerCameraInfo `json:"cameras"`
 		AvgProcessMs float64            `json:"avg_process_ms"`
+		IsPaused     bool               `json:"is_paused"`
 	}
 
 	result := make([]WorkerInfo, 0)
@@ -715,6 +716,7 @@ func GetWorkers(c *fiber.Ctx) error {
 
 		w.mu.Lock()
 		avgProcessMs := w.avgProcessMs
+		isPaused := w.isPaused
 		w.mu.Unlock()
 
 		result = append(result, WorkerInfo{
@@ -723,6 +725,7 @@ func GetWorkers(c *fiber.Ctx) error {
 			Uptime:       uptime,
 			Cameras:      assignedCams,
 			AvgProcessMs: avgProcessMs,
+			IsPaused:     isPaused,
 		})
 	}
 
@@ -730,5 +733,15 @@ func GetWorkers(c *fiber.Ctx) error {
 		"workers": result,
 		"total":   len(result),
 	})
+}
+
+// ToggleWorkerPauseHandler toggles the pause/resume state of an AI worker session.
+func ToggleWorkerPauseHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	isPaused, err := ToggleWorkerPause(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"id": id, "is_paused": isPaused})
 }
 
