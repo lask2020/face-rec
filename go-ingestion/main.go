@@ -88,12 +88,13 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	ictx, cancel := context.WithCancel(ctx)
 	activeCameras[camID] = cancel
 
-	// Register stream in go2rtc first
+	// Register stream in go2rtc first (configured to discard non-keyframes)
 	streamName := fmt.Sprintf("cam_%d", camID)
-	if err := registerStream(streamName, rtspURL); err != nil {
+	streamSource := fmt.Sprintf("ffmpeg:%s#video=copy#raw=-discard nokey", rtspURL)
+	if err := registerStream(streamName, streamSource); err != nil {
 		log.Printf("[Camera %d] Failed to register in go2rtc: %v. Will retry on capture.", camID, err)
 	} else {
-		log.Printf("[Camera %d] Registered in go2rtc as '%s'", camID, streamName)
+		log.Printf("[Camera %d] Registered in go2rtc as '%s' (Keyframe only)", camID, streamName)
 	}
 
 	// Convert FPS to millisecond interval (e.g. 3 fps -> 333ms)

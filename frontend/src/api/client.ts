@@ -105,6 +105,7 @@ export interface Detection {
   confidence: number;
   snapshot_url: string | null;
   face_crop_url: string | null;
+  restored_face_url: string | null;
   detected_at: string;
 }
 
@@ -156,6 +157,8 @@ export interface DetectionEvent {
   camera_name: string;
   confidence: number;
   snapshot_url: string | null;
+  face_crop_url: string | null;
+  restored_face_url: string | null;
   timestamp: string;
 }
 

@@ -524,19 +524,35 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 			log.Printf("[gRPC] Failed to crop face: %v", err)
 		}
 
+		// Upload CodeFormer restored face if present
+		if len(det.RestoredFaceJpeg) > 0 && S3Client != nil {
+			restoredFilename := fmt.Sprintf("restored_cam_%d_%d_%d.jpg", task.CameraID, task.Timestamp, idx)
+			_, err = S3Client.PutObject(ctx, SnapshotsBucket, restoredFilename, bytes.NewReader(det.RestoredFaceJpeg), int64(len(det.RestoredFaceJpeg)), minio.PutObjectOptions{
+				ContentType: "image/jpeg",
+			})
+			if err == nil {
+				logEntry.RestoredFacePath = "/api/static/snapshots/" + restoredFilename
+				log.Printf("[gRPC] Uploaded restored face crop for camera %d to S3 as %s", task.CameraID, restoredFilename)
+			} else {
+				log.Printf("[gRPC] Failed to upload restored face to S3: %v", err)
+			}
+		}
+
 		DB.Create(&logEntry)
 		recorded++
 
 		// Broadcast to UI via WebSockets for each detection event
 		payload := fiber.Map{
-			"type":         "detection",
-			"person_id":    personID,
-			"person_name":  logEntry.PersonName,
-			"camera_id":    task.CameraID,
-			"camera_name":  logEntry.CameraName,
-			"confidence":   score,
-			"snapshot_url": logEntry.SnapshotPath,
-			"timestamp":    time.UnixMilli(task.Timestamp).Format(time.RFC3339),
+			"type":              "detection",
+			"person_id":         personID,
+			"person_name":       logEntry.PersonName,
+			"camera_id":         task.CameraID,
+			"camera_name":       logEntry.CameraName,
+			"confidence":        score,
+			"snapshot_url":      logEntry.SnapshotPath,
+			"face_crop_url":     logEntry.FaceCropPath,
+			"restored_face_url": logEntry.RestoredFacePath,
+			"timestamp":         time.UnixMilli(task.Timestamp).Format(time.RFC3339),
 		}
 		BroadcastDetection(payload)
 	}

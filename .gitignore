@@ -19,10 +19,13 @@ htmlcov/
 *.egg-info/
 .eggs/
 
-# PyInstaller (Windows Build Artifacts)
+# PyInstaller & Build Artifacts
 backend/build/
 backend/dist/
 backend/*.spec
+backend/venv_build/
+venv_build/
+venv_native/
 
 # Node/React Frontend
 frontend/node_modules/
@@ -48,6 +51,7 @@ go-ingestion/go-worker
 # Local Databases & Media
 backend/data/*.db
 backend/data/models/
+backend/data/
 go-control-plane/data/
 postgres_data/
 qdrant_data/
@@ -65,3 +69,5 @@ pgdata/
 *.swo
 .kilo/
 
+worker_config.json
+go2rtc.yaml

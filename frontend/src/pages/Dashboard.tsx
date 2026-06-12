@@ -190,12 +190,22 @@ export default function Dashboard({ events }: DashboardProps) {
                       <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Detected</span>
                       <div className="person-side-face-item" style={{ width: '80px', height: '80px' }}>
                         <img 
-                          src={selectedEvent.snapshot_url.replace("cam_", "crop_cam_").replace(".jpg", "_0.jpg")} 
+                          src={selectedEvent.face_crop_url || selectedEvent.snapshot_url.replace("cam_", "crop_cam_").replace(".jpg", "_0.jpg")} 
                           onError={(e) => {
                             (e.target as HTMLImageElement).src = selectedEvent.snapshot_url || '';
                           }}
                           alt="Detected face" 
                         />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Restored Face */}
+                  {selectedEvent.restored_face_url && (
+                    <div>
+                      <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Restored ✨</span>
+                      <div className="person-side-face-item" style={{ width: '80px', height: '80px', border: '1px solid var(--primary-light)' }}>
+                        <img src={selectedEvent.restored_face_url} alt="Restored face" />
                       </div>
                     </div>
                   )}

@@ -63,9 +63,10 @@ type DetectionLog struct {
 	CameraID     uint      `gorm:"not null;index" json:"camera_id"`
 	CameraName   string    `gorm:"size:255;default:''" json:"camera_name"`
 	Confidence   float64   `gorm:"default:0.0" json:"confidence"`
-	SnapshotPath string    `gorm:"size:512" json:"snapshot_url"`
-	FaceCropPath string    `gorm:"size:512" json:"face_crop_url"`
-	DetectedAt   time.Time `gorm:"index" json:"detected_at"`
+	SnapshotPath     string    `gorm:"size:512" json:"snapshot_url"`
+	FaceCropPath     string    `gorm:"size:512" json:"face_crop_url"`
+	RestoredFacePath string    `gorm:"size:512" json:"restored_face_url"`
+	DetectedAt       time.Time `gorm:"index" json:"detected_at"`
 }
 
 func (DetectionLog) TableName() string {

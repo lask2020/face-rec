@@ -16,6 +16,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import facerec_pb2
 import facerec_pb2_grpc
 from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
+from app.face_restorer import face_restorer
 
 # Set up logging
 logging.basicConfig(
@@ -153,11 +154,34 @@ def track_flusher(send_queue, stop_event=None):
                 logger.info(f"Flushing best face track for camera {track.camera_id} (Area: {track.face_area:.0f}, Sharpness: {track.sharpness:.1f}, Frontality: {track.frontality:.2f}, Quality: {track.quality_score:.0f})")
                 add_cooldown(track.embedding)
                 
+                restored_face_bytes = b""
+                if face_restorer.is_enabled():
+                    try:
+                        nparr = np.frombuffer(track.image_bytes, np.uint8)
+                        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        if img is not None:
+                            h, w = img.shape[:2]
+                            x1 = max(0, int(track.bbox[0]))
+                            y1 = max(0, int(track.bbox[1]))
+                            x2 = min(w, int(track.bbox[2]))
+                            y2 = min(h, int(track.bbox[3]))
+                            face_crop = img[y1:y2, x1:x2]
+                            if face_crop.size > 0:
+                                restored = face_restorer.restore_face(face_crop)
+                                if restored is not None:
+                                    success, encoded_img = cv2.imencode(".jpg", restored)
+                                    if success:
+                                        restored_face_bytes = encoded_img.tobytes()
+                                        logger.info(f"Successfully restored face for track {track.track_id}")
+                    except Exception as e:
+                        logger.error(f"Error during face restoration in flusher: {e}")
+
                 result = facerec_pb2.InferenceResult(
                     task_id=track.task_id,
                     detections=[facerec_pb2.Detection(
                         bbox=track.bbox,
-                        embedding=track.embedding.tolist()
+                        embedding=track.embedding.tolist(),
+                        restored_face_jpeg=restored_face_bytes
                     )]
                 )
                 send_queue.put(result)
@@ -197,6 +221,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
     logger.info("Initializing Face Engine...")
     face_engine.initialize()
     logger.info("Face Engine initialized successfully.")
+    
+    # Initialize CodeFormer Face Restorer
+    if face_restorer.is_enabled():
+        logger.info("Initializing Face Restorer...")
+        face_restorer.initialize()
+        logger.info("Face Restorer initialized successfully.")
 
     def sleep_interruptible(seconds):
         steps = int(seconds / 0.2)

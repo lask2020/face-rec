@@ -24,4 +24,5 @@ message InferenceResult {
 message Detection {
   repeated float bbox = 1; // [x1, y1, x2, y2]
   repeated float embedding = 2; // 512-dim embedding
+  bytes restored_face_jpeg = 3; // CodeFormer restored face crop (JPEG)
 }

@@ -57,7 +57,8 @@ export default function Detections({ events = [] }: DetectionsProps) {
       camera_name: latestEvent.camera_name,
       confidence: latestEvent.confidence,
       snapshot_url: latestEvent.snapshot_url,
-      face_crop_url: latestEvent.snapshot_url?.replace("cam_", "crop_cam_").replace(".jpg", "_0.jpg") || null,
+      face_crop_url: latestEvent.face_crop_url || latestEvent.snapshot_url?.replace("cam_", "crop_cam_").replace(".jpg", "_0.jpg") || null,
+      restored_face_url: latestEvent.restored_face_url || null,
       detected_at: latestEvent.timestamp,
     };
 
@@ -359,6 +360,16 @@ export default function Detections({ events = [] }: DetectionsProps) {
                       <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Detected</span>
                       <div className="person-side-face-item" style={{ width: '80px', height: '80px' }}>
                         <img src={selectedDetection.face_crop_url} alt="Detected face" />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Restored Face */}
+                  {selectedDetection.restored_face_url && (
+                    <div>
+                      <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Restored ✨</span>
+                      <div className="person-side-face-item" style={{ width: '80px', height: '80px', border: '1px solid var(--primary-light)' }}>
+                        <img src={selectedDetection.restored_face_url} alt="Restored face" />
                       </div>
                     </div>
                   )}

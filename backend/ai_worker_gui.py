@@ -1,121 +1,243 @@
-import logging
-import os
 import sys
+import os
+import json
+import logging
 import threading
-import tkinter as tk
-from tkinter import ttk
-from tkinter import scrolledtext
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QComboBox, QPushButton, QTextEdit, QFrame, QGridLayout
+)
+from PyQt6.QtCore import pyqtSignal, QObject, Qt, QThread
+from PyQt6.QtGui import QFont, QTextCursor
 
 # Ensure the parent directories are in sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from ai_worker_grpc import run_grpc_client
 
-# Log handler to redirect Python logs to the Tkinter text box
-class TkinterLogHandler(logging.Handler):
-    def __init__(self, text_widget):
+class LogEmitter(QObject):
+    """Signal emitter for routing standard logging to the PyQt GUI safely."""
+    log_signal = pyqtSignal(str)
+
+
+class PyQtLogHandler(logging.Handler):
+    """Logging handler that emits log messages via PyQt signals."""
+    def __init__(self, emitter):
         super().__init__()
-        self.text_widget = text_widget
+        self.emitter = emitter
 
     def emit(self, record):
         msg = self.format(record)
-        def append():
-            self.text_widget.configure(state='normal')
-            self.text_widget.insert(tk.END, msg + '\n')
-            self.text_widget.see(tk.END)
-            self.text_widget.configure(state='disabled')
-        # Schedule update on the main Tkinter thread
-        self.text_widget.after(0, append)
+        self.emitter.log_signal.emit(msg)
 
 
-class AIWorkerGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("FaceRec AI Worker Node")
-        self.root.geometry("680x480")
-        self.root.minsize(500, 350)
+class WorkerThread(QThread):
+    """Thread wrapper to run the grpc client as a subprocess without blocking the GUI."""
+    finished_signal = pyqtSignal()
+    error_signal = pyqtSignal(str)
+    log_signal = pyqtSignal(str)
 
-        # Apply a dark theme styling
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Dark color palette
-        style.configure(".", background="#1e1e24", foreground="#ffffff", fieldbackground="#2e2e38")
-        style.configure("TLabel", background="#1e1e24", foreground="#e0e0e8", font=("Segoe UI", 10))
-        style.configure("TButton", background="#3e3e4a", foreground="#ffffff", font=("Segoe UI", 10, "bold"))
-        style.map("TButton", background=[("active", "#4e4e5a")])
-        style.configure("Primary.TButton", background="#0066cc", foreground="#ffffff")
-        style.map("Primary.TButton", background=[("active", "#0052a3")])
-        style.configure("Danger.TButton", background="#cc3333", foreground="#ffffff")
-        style.map("Danger.TButton", background=[("active", "#a32929")])
+    def __init__(self, url, provider):
+        super().__init__()
+        self.url = url
+        self.provider = provider
+        self.process = None
+        self.is_running = True
 
-        self.root.configure(background="#1e1e24")
+    def run(self):
+        import subprocess
+        try:
+            # Run ai_worker_grpc.py as a separate process to avoid CoreML + PyQt thread crashes
+            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_worker_grpc.py")
+            env = os.environ.copy()
+            env["CONTROL_PLANE_URL"] = self.url
+            env["ONNX_PROVIDER"] = self.provider
 
-        # Worker state
-        self.worker_thread = None
-        self.stop_event = None
+            self.process = subprocess.Popen(
+                [sys.executable, script_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                bufsize=1
+            )
+
+            # Read logs line by line
+            for line in iter(self.process.stdout.readline, ''):
+                if not self.is_running:
+                    break
+                if line:
+                    self.log_signal.emit(line.strip())
+            
+            self.process.stdout.close()
+            self.process.wait()
+
+        except Exception as e:
+            self.error_signal.emit(str(e))
+        finally:
+            self.finished_signal.emit()
+
+    def stop(self):
         self.is_running = False
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+
+class AIWorkerWindow(QMainWindow):
+    CONFIG_FILE = "worker_config.json"
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("FaceRec AI Worker Node")
+        self.setMinimumSize(700, 500)
+
+        self.worker_thread = None
+        self.is_running = False
+
+        self.url_value = os.getenv("CONTROL_PLANE_URL", "localhost:50051")
+        self.provider_value = "CPUExecutionProvider"
+        self._load_config()
 
         self.setup_ui()
         self.setup_logging()
 
+    def _load_config(self):
+        if os.path.exists(self.CONFIG_FILE):
+            try:
+                with open(self.CONFIG_FILE, "r") as f:
+                    config = json.load(f)
+                    self.url_value = config.get("url", self.url_value)
+                    self.provider_value = config.get("provider", self.provider_value)
+            except Exception as e:
+                logging.error(f"Failed to load config: {e}")
+
+    def _save_config(self):
+        try:
+            with open(self.CONFIG_FILE, "w") as f:
+                json.dump({
+                    "url": self.url_entry.text().strip(),
+                    "provider": self.provider_combo.currentText()
+                }, f, indent=4)
+        except Exception as e:
+            logging.error(f"Failed to save config: {e}")
+
     def setup_ui(self):
-        # Configuration Frame
-        config_frame = ttk.LabelFrame(self.root, text=" Configuration ", padding=15)
-        config_frame.pack(fill=tk.X, padx=15, pady=10)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
-        # 1. Control Plane URL
-        ttk.Label(config_frame, text="Control Plane URL:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.url_var = tk.StringVar(value=os.getenv("CONTROL_PLANE_URL", "localhost:50051"))
-        self.url_entry = ttk.Entry(config_frame, textvariable=self.url_var, width=35)
-        self.url_entry.grid(row=0, column=1, sticky=tk.W, padx=10, pady=5)
+        # ── Title ──
+        title_lbl = QLabel("⚙️ Configuration")
+        title_font = QFont("Helvetica", 16, QFont.Weight.Bold)
+        title_lbl.setFont(title_font)
+        main_layout.addWidget(title_lbl)
 
-        # 2. ONNX Execution Provider
-        ttk.Label(config_frame, text="Execution Provider:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.provider_var = tk.StringVar(value="Default")
+        # ── Config Form ──
+        form_layout = QGridLayout()
+        form_layout.setColumnStretch(1, 1)
+
+        # Control Plane URL
+        url_lbl = QLabel("Control Plane URL:")
+        url_lbl.setFont(QFont("Helvetica", 13))
+        self.url_entry = QLineEdit(self.url_value)
+        self.url_entry.setFont(QFont("Helvetica", 13))
+        self.url_entry.editingFinished.connect(self._save_config)
+        
+        # Start/Stop Button
+        self.start_btn = QPushButton("⚡ Start Worker")
+        self.start_btn.setFont(QFont("Helvetica", 13, QFont.Weight.Bold))
+        self.start_btn.setMinimumHeight(45)
+        self.start_btn.clicked.connect(self.toggle_worker)
+        # Add PyQt styling for the button
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1f538d;
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #14375d;
+            }
+        """)
+
+        form_layout.addWidget(url_lbl, 0, 0)
+        form_layout.addWidget(self.url_entry, 0, 1)
+        form_layout.addWidget(self.start_btn, 0, 2, 2, 1) # Span 2 rows
+
+        # Execution Provider
+        provider_lbl = QLabel("Execution Provider:")
+        provider_lbl.setFont(QFont("Helvetica", 13))
+        self.provider_combo = QComboBox()
+        self.provider_combo.setFont(QFont("Helvetica", 13))
         providers = [
-            "Default",
             "CPUExecutionProvider",
+            "CoreMLExecutionProvider",
             "CUDAExecutionProvider",
             "OpenVINOExecutionProvider",
             "ROCmExecutionProvider",
             "DmlExecutionProvider"
         ]
-        self.provider_menu = ttk.OptionMenu(config_frame, self.provider_var, "Default", *providers)
-        self.provider_menu.grid(row=1, column=1, sticky=tk.W, padx=10, pady=5)
+        self.provider_combo.addItems(providers)
+        
+        # Set selected provider
+        index = self.provider_combo.findText(self.provider_value)
+        if index >= 0:
+            self.provider_combo.setCurrentIndex(index)
+            
+        self.provider_combo.currentTextChanged.connect(self._save_config)
 
-        # Action Buttons
-        self.start_btn = ttk.Button(config_frame, text="⚡ Start Worker", style="Primary.TButton", command=self.toggle_worker)
-        self.start_btn.grid(row=0, column=2, rowspan=2, padx=20, pady=5, sticky=tk.NSEW)
+        form_layout.addWidget(provider_lbl, 1, 0)
+        form_layout.addWidget(self.provider_combo, 1, 1)
 
-        # Log Frame
-        log_frame = ttk.LabelFrame(self.root, text=" Application Logs ", padding=10)
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+        main_layout.addLayout(form_layout)
 
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame, 
-            wrap=tk.WORD, 
-            background="#121214", 
-            foreground="#a0a0a5", 
-            insertbackground="white",
-            font=("Consolas", 9.5)
-        )
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.configure(state='disabled')
+        # ── Separator ──
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(line)
+
+        # ── Application Logs ──
+        log_lbl = QLabel("📋 Application Logs")
+        log_lbl.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
+        main_layout.addWidget(log_lbl)
+
+        self.log_textedit = QTextEdit()
+        self.log_textedit.setReadOnly(True)
+        self.log_textedit.setFont(QFont("Courier", 12))
+        self.log_textedit.setStyleSheet("background-color: #1e1e1e; color: #00ff00;")
+        main_layout.addWidget(self.log_textedit)
 
     def setup_logging(self):
-        # Attach our custom log handler to root logger
         root_logger = logging.getLogger()
-        
-        # Avoid adding duplicate handlers if re-instantiated
-        for handler in root_logger.handlers[:]:
-            if isinstance(handler, TkinterLogHandler):
-                root_logger.removeHandler(handler)
+        root_logger.setLevel(logging.INFO)
+        root_logger.handlers = [] # Clear old handlers
 
-        handler = TkinterLogHandler(self.log_text)
-        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        handler.setFormatter(formatter)
-        root_logger.addHandler(handler)
+        self.log_emitter = LogEmitter()
+        self.log_emitter.log_signal.connect(self.append_log)
+
+        # GUI Handler
+        gui_handler = PyQtLogHandler(self.log_emitter)
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        gui_handler.setFormatter(formatter)
+        root_logger.addHandler(gui_handler)
+
+        # Terminal Handler
+        term_handler = logging.StreamHandler(sys.stdout)
+        term_handler.setFormatter(formatter)
+        root_logger.addHandler(term_handler)
+
+        logging.info("PyQt6 GUI Initialized. Ready to rock! 🚀")
+
+    def append_log(self, text):
+        self.log_textedit.moveCursor(QTextCursor.MoveOperation.End)
+        self.log_textedit.insertPlainText(text + "\n")
+        self.log_textedit.moveCursor(QTextCursor.MoveOperation.End)
 
     def toggle_worker(self):
         if self.is_running:
@@ -124,69 +246,79 @@ class AIWorkerGUI:
             self.start_worker()
 
     def start_worker(self):
-        url = self.url_var.get().strip()
-        provider = self.provider_var.get()
-        if provider == "Default":
-            provider = None
+        url = self.url_entry.text().strip()
+        provider = self.provider_combo.currentText()
 
         if not url:
             logging.error("Control Plane URL cannot be empty.")
             return
 
-        # Disable input fields
-        self.url_entry.configure(state='disabled')
-        self.provider_menu.configure(state='disabled')
-        self.start_btn.configure(text="🛑 Stop Worker", style="Danger.TButton")
-        
-        self.stop_event = threading.Event()
-        self.is_running = True
+        self.url_entry.setEnabled(False)
+        self.provider_combo.setEnabled(False)
+        self.start_btn.setText("🛑 Stop Worker")
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #a83232;
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #7a2424;
+            }
+        """)
 
-        # Start worker thread
-        self.worker_thread = threading.Thread(
-            target=self.run_worker_proc,
-            args=(url, provider, self.stop_event),
-            daemon=True
-        )
+        self.is_running = True
+        
+        self.worker_thread = WorkerThread(url, provider)
+        self.worker_thread.finished_signal.connect(self.on_worker_finished)
+        self.worker_thread.error_signal.connect(self.on_worker_error)
+        self.worker_thread.log_signal.connect(self.append_log)
         self.worker_thread.start()
+        
+        logging.info(f"Starting worker thread connecting to {url} with {provider}...")
 
     def stop_worker(self):
-        if self.stop_event:
-            logging.info("Stopping AI Worker thread...")
-            self.stop_event.set()
-        
-        self.is_running = False
-        self.start_btn.configure(text="⚡ Start Worker", style="Primary.TButton")
-        self.url_entry.configure(state='normal')
-        self.provider_menu.configure(state='normal')
+        if self.worker_thread and self.worker_thread.isRunning():
+            logging.info("Sending stop signal to worker thread...")
+            self.worker_thread.stop()
 
-    def run_worker_proc(self, url, provider, stop_event):
-        try:
-            run_grpc_client(control_plane_url=url, onnx_provider=provider, stop_event=stop_event)
-        except Exception as e:
-            logging.error(f"Worker crashed: {e}")
-        finally:
-            # Update UI on worker thread exit
-            def reset_ui():
-                if self.is_running:
-                    self.stop_worker()
-            self.root.after(0, reset_ui)
+    def on_worker_finished(self):
+        self.is_running = False
+        self.start_btn.setText("⚡ Start Worker")
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1f538d;
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #14375d;
+            }
+        """)
+        self.url_entry.setEnabled(True)
+        self.provider_combo.setEnabled(True)
+        logging.info("Worker thread completely stopped.")
+
+    def on_worker_error(self, err_msg):
+        logging.error(f"Worker crashed: {err_msg}")
+
+
+def main():
+    # Fix High DPI scaling
+    os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
+    
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion") # Native-like modern look
+    
+    window = AIWorkerWindow()
+    window.show()
+    
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-    # If headless CLI parameters are passed, bypass GUI
     if len(sys.argv) > 1 and ("--help" in sys.argv or "-h" in sys.argv):
-        print("Usage: python ai_worker_gui.py [control_plane_url] [onnx_provider]")
+        print("Usage: python ai_worker_gui.py")
         sys.exit(0)
 
-    # Launch GUI
-    root = tk.Tk()
-    app = AIWorkerGUI(root)
-    
-    # Handle window close event to clean up thread
-    def on_closing():
-        if app.is_running:
-            app.stop_worker()
-        root.destroy()
-        
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
+    main()

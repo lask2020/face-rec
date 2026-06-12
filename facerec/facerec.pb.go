@@ -85,6 +85,8 @@ type InferenceResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	Detections    []*Detection           `protobuf:"bytes,2,rep,name=detections,proto3" json:"detections,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	ProcessTimeMs float32                `protobuf:"fixed32,4,opt,name=process_time_ms,json=processTimeMs,proto3" json:"process_time_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -133,12 +135,27 @@ func (x *InferenceResult) GetDetections() []*Detection {
 	return nil
 }
 
+func (x *InferenceResult) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *InferenceResult) GetProcessTimeMs() float32 {
+	if x != nil {
+		return x.ProcessTimeMs
+	}
+	return 0
+}
+
 type Detection struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Bbox          []float32              `protobuf:"fixed32,1,rep,packed,name=bbox,proto3" json:"bbox,omitempty"`           // [x1, y1, x2, y2]
-	Embedding     []float32              `protobuf:"fixed32,2,rep,packed,name=embedding,proto3" json:"embedding,omitempty"` // 512-dim embedding
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Bbox             []float32              `protobuf:"fixed32,1,rep,packed,name=bbox,proto3" json:"bbox,omitempty"`                                          // [x1, y1, x2, y2]
+	Embedding        []float32              `protobuf:"fixed32,2,rep,packed,name=embedding,proto3" json:"embedding,omitempty"`                                // 512-dim embedding
+	RestoredFaceJpeg []byte                 `protobuf:"bytes,3,opt,name=restored_face_jpeg,json=restoredFaceJpeg,proto3" json:"restored_face_jpeg,omitempty"` // CodeFormer restored face crop (JPEG)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Detection) Reset() {
@@ -185,6 +202,13 @@ func (x *Detection) GetEmbedding() []float32 {
 	return nil
 }
 
+func (x *Detection) GetRestoredFaceJpeg() []byte {
+	if x != nil {
+		return x.RestoredFaceJpeg
+	}
+	return nil
+}
+
 var File_facerec_proto protoreflect.FileDescriptor
 
 const file_facerec_proto_rawDesc = "" +
@@ -194,15 +218,18 @@ const file_facerec_proto_rawDesc = "" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
 	"image_data\x18\x02 \x01(\fR\timageData\x12'\n" +
-	"\x0fis_registration\x18\x03 \x01(\bR\x0eisRegistration\"^\n" +
+	"\x0fis_registration\x18\x03 \x01(\bR\x0eisRegistration\"\xab\x01\n" +
 	"\x0fInferenceResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x122\n" +
 	"\n" +
 	"detections\x18\x02 \x03(\v2\x12.facerec.DetectionR\n" +
-	"detections\"=\n" +
+	"detections\x12#\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12&\n" +
+	"\x0fprocess_time_ms\x18\x04 \x01(\x02R\rprocessTimeMs\"k\n" +
 	"\tDetection\x12\x12\n" +
 	"\x04bbox\x18\x01 \x03(\x02R\x04bbox\x12\x1c\n" +
-	"\tembedding\x18\x02 \x03(\x02R\tembedding2Y\n" +
+	"\tembedding\x18\x02 \x03(\x02R\tembedding\x12,\n" +
+	"\x12restored_face_jpeg\x18\x03 \x01(\fR\x10restoredFaceJpeg2Y\n" +
 	"\x14FaceInferenceService\x12A\n" +
 	"\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x010\x01B\vZ\t./facerecb\x06proto3"
 

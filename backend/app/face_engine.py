@@ -146,13 +146,32 @@ class FaceEngine:
                 ]
                 logger.info(f"Attempting to load ONNX providers: {providers}")
 
+            # Determine models root directory dynamically for both Docker and native host environments
+            data_root = os.getenv("FACE_DATA_ROOT")
+            if not data_root:
+                if os.path.exists("/app/data"):
+                    data_root = "/app/data"
+                elif os.path.exists("data"):
+                    data_root = "data"
+                elif os.path.exists("backend/data"):
+                    data_root = "backend/data"
+                else:
+                    data_root = os.path.expanduser("~/.insightface")
+            logger.info(f"Using face data root directory: {data_root}")
+
             self.model = FaceAnalysis(
                 name="buffalo_l",
-                root="/app/data",
+                root=data_root,
                 providers=providers,
             )
-            self.model.prepare(ctx_id=0, det_size=(640, 640))
-            logger.info("InsightFace model 'buffalo_l' loaded successfully")
+            
+            # NOTE: We MUST use 640x640 for CoreMLExecutionProvider. 
+            # CoreML compiles the ONNX model into a static .mlmodel, and the SCRFD 
+            # detector used in buffalo_l has hardcoded anchor shapes. Changing this 
+            # to 320x320 causes a shape mismatch crash (Bus error 10) on macOS.
+            det_size_val = int(os.getenv("FACE_DETECTION_SIZE", "640"))
+            self.model.prepare(ctx_id=0, det_size=(det_size_val, det_size_val))
+            logger.info(f"InsightFace model 'buffalo_l' loaded successfully with det_size={det_size_val}x{det_size_val}")
         except Exception as e:
             logger.warning(f"Failed to load InsightFace model: {e}")
             logger.warning("Face engine will operate in mock mode (no real detection)")
