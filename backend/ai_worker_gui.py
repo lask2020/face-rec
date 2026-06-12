@@ -47,13 +47,18 @@ class WorkerThread(QThread):
         import subprocess
         try:
             # Run ai_worker_grpc.py as a separate process to avoid CoreML + PyQt thread crashes
-            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_worker_grpc.py")
+            if getattr(sys, 'frozen', False):
+                cmd = [sys.executable, "--run-worker"]
+            else:
+                script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_worker_grpc.py")
+                cmd = [sys.executable, script_path]
+
             env = os.environ.copy()
             env["CONTROL_PLANE_URL"] = self.url
             env["ONNX_PROVIDER"] = self.provider
 
             self.process = subprocess.Popen(
-                [sys.executable, script_path],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -232,7 +237,7 @@ class AIWorkerWindow(QMainWindow):
         term_handler.setFormatter(formatter)
         root_logger.addHandler(term_handler)
 
-        logging.info("PyQt6 GUI Initialized. Ready to rock! 🚀")
+        logging.info("PyQt6 GUI Initialized. Ready to rock!")
 
     def append_log(self, text):
         self.log_textedit.moveCursor(QTextCursor.MoveOperation.End)
@@ -317,6 +322,11 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-worker":
+        import ai_worker_grpc
+        ai_worker_grpc.run_grpc_client()
+        sys.exit(0)
+
     if len(sys.argv) > 1 and ("--help" in sys.argv or "-h" in sys.argv):
         print("Usage: python ai_worker_gui.py")
         sys.exit(0)

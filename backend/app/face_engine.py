@@ -129,6 +129,22 @@ class FaceEngine:
 
         # Load InsightFace model
         try:
+            # Patch ml_dtypes for onnx on Python 3.13 to prevent missing attribute errors
+            try:
+                import numpy as np
+                import ml_dtypes
+                # List of newer data types onnx expects but older ml_dtypes lacks
+                missing_types = [
+                    'float4_e2m1fn', 'float8_e8m0fnu', 'float8_e4m3fn', 
+                    'float8_e4m3fnuz', 'float8_e5m2', 'float8_e5m2fnuz',
+                    'int4', 'uint4'
+                ]
+                for attr in missing_types:
+                    if not hasattr(ml_dtypes, attr):
+                        setattr(ml_dtypes, attr, np.float32)
+            except ImportError:
+                pass
+
             import insightface
             from insightface.app import FaceAnalysis
 

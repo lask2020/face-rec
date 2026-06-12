@@ -67,7 +67,7 @@ echo Compiling gRPC protobuf definitions...
 python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. facerec.proto
 
 echo [4/4] Compiling GUI application with PyInstaller...
-pyinstaller --noconfirm --noconsole --onefile --name="FaceRec_AI_Worker_Windows_%SUFFIX%" --add-data "app;app" --add-data "facerec.proto;." ai_worker_gui.py
+pyinstaller --noconfirm --noconsole --onefile --name="FaceRec_AI_Worker_Windows_%SUFFIX%" --add-data "app;app" --add-data "facerec.proto;." --collect-binaries onnxruntime ai_worker_gui.py
 
 if %errorlevel% neq 0 (
     echo [ERROR] PyInstaller compilation failed!
