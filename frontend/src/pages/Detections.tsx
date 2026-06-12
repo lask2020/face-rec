@@ -359,7 +359,7 @@ export default function Detections({ events = [] }: DetectionsProps) {
                     <div>
                       <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Detected</span>
                       <div className="person-side-face-item" style={{ width: '80px', height: '80px' }}>
-                        <img src={selectedDetection.face_crop_url} alt="Detected face" />
+                        <img src={selectedDetection.face_crop_url} alt="Detected face" style={{ cursor: 'pointer' }} onClick={(e) => window.open((e.target as HTMLImageElement).src, '_blank')} />
                       </div>
                     </div>
                   )}
@@ -369,7 +369,7 @@ export default function Detections({ events = [] }: DetectionsProps) {
                     <div>
                       <span className="person-side-label" style={{ fontSize: '10px', opacity: 0.8, marginBottom: '4px', display: 'block' }}>Restored ✨</span>
                       <div className="person-side-face-item" style={{ width: '80px', height: '80px', border: '1px solid var(--primary-light)' }}>
-                        <img src={selectedDetection.restored_face_url} alt="Restored face" />
+                        <img src={selectedDetection.restored_face_url} alt="Restored face" style={{ cursor: 'pointer' }} onClick={(e) => window.open((e.target as HTMLImageElement).src, '_blank')} />
                       </div>
                     </div>
                   )}
@@ -382,7 +382,7 @@ export default function Detections({ events = [] }: DetectionsProps) {
                         {loadingPerson ? (
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>...</div>
                         ) : selectedPerson && selectedPerson.faces && selectedPerson.faces.length > 0 ? (
-                          <img src={selectedPerson.faces[0].image_url} alt="Registered face" />
+                          <img src={selectedPerson.faces[0].image_url} alt="Registered face" style={{ cursor: 'pointer' }} onClick={(e) => window.open((e.target as HTMLImageElement).src, '_blank')} />
                         ) : (
                           <div className="person-side-avatar-placeholder" style={{ width: '100%', height: '100%', margin: 0, borderRadius: 'var(--radius-md)', fontSize: '20px' }}>?</div>
                         )}

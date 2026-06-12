@@ -507,9 +507,11 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 		filename := fmt.Sprintf("cam_%d_%d.jpg", task.CameraID, task.Timestamp)
 		logEntry.SnapshotPath = "/api/static/snapshots/" + filename
 
-		// Crop the face from the original frame
+		// Crop the face from the original frame (add 50% padding to match the AI worker crop scale)
 		x1, y1, x2, y2 := int(det.Bbox[0]), int(det.Bbox[1]), int(det.Bbox[2]), int(det.Bbox[3])
-		croppedFace, err := CropJPEG(task.ImageBytes, x1, y1, x2, y2, 90)
+		padX := (x2 - x1) / 2
+		padY := (y2 - y1) / 2
+		croppedFace, err := CropJPEG(task.ImageBytes, x1-padX, y1-padY, x2+padX, y2+padY, 90)
 		if err == nil && S3Client != nil {
 			cropFilename := fmt.Sprintf("crop_cam_%d_%d_%d.jpg", task.CameraID, task.Timestamp, idx)
 			_, err = S3Client.PutObject(ctx, SnapshotsBucket, cropFilename, bytes.NewReader(croppedFace), int64(len(croppedFace)), minio.PutObjectOptions{

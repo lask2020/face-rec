@@ -5,6 +5,10 @@ import time
 import sys
 import threading
 import uuid
+import warnings
+
+# Suppress numpy FutureWarning from insightface
+warnings.filterwarnings("ignore", category=FutureWarning, module="insightface")
 
 import cv2
 import grpc
@@ -167,10 +171,15 @@ def track_flusher(send_queue, stop_event=None):
                         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         if img is not None:
                             h, w = img.shape[:2]
-                            x1 = max(0, int(track.bbox[0]))
-                            y1 = max(0, int(track.bbox[1]))
-                            x2 = min(w, int(track.bbox[2]))
-                            y2 = min(h, int(track.bbox[3]))
+                            bw = int(track.bbox[2] - track.bbox[0])
+                            bh = int(track.bbox[3] - track.bbox[1])
+                            padding_x = int(bw * 0.5)
+                            padding_y = int(bh * 0.5)
+
+                            x1 = max(0, int(track.bbox[0]) - padding_x)
+                            y1 = max(0, int(track.bbox[1]) - padding_y)
+                            x2 = min(w, int(track.bbox[2]) + padding_x)
+                            y2 = min(h, int(track.bbox[3]) + padding_y)
                             face_crop = img[y1:y2, x1:x2]
                             if face_crop.size > 0:
                                 restored = face_restorer.restore_face(face_crop)
