@@ -51,7 +51,6 @@ go-ingestion/go-worker
 # Local Databases & Media
 backend/data/*.db
 backend/data/models/
-backend/data/
 go-control-plane/data/
 postgres_data/
 qdrant_data/
@@ -71,3 +70,4 @@ pgdata/
 
 worker_config.json
 go2rtc.yaml
+backend/data/codeformer.onnx

@@ -33,7 +33,7 @@ logger = logging.getLogger("AI_Worker_gRPC")
 class FaceTrack:
     """Represents a tracked face on a camera over a short buffering window."""
 
-    def __init__(self, camera_id, bbox, embedding, task_id, image_bytes, sharpness: float = 0.0, frontality: float = 1.0):
+    def __init__(self, camera_id, bbox, embedding, task_id, image_bytes, sharpness: float = 0.0, frontality: float = 1.0, kps: list = None):
         self.camera_id = camera_id
         self.track_id = str(uuid.uuid4())
         self.bbox = bbox
@@ -43,12 +43,13 @@ class FaceTrack:
         self.face_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
         self.sharpness = sharpness
         self.frontality = frontality
+        self.kps = kps
         self.quality_score = self.face_area * self.frontality
         
         self.first_seen = time.time()
         self.last_seen = time.time()
 
-    def update(self, bbox, embedding, task_id, image_bytes, sharpness: float = 0.0, frontality: float = 1.0):
+    def update(self, bbox, embedding, task_id, image_bytes, sharpness: float = 0.0, frontality: float = 1.0, kps: list = None):
         """Update the track's best frame using sharpness-gated + quality score selection.
 
         Quality score = face_area × frontality.
@@ -84,6 +85,7 @@ class FaceTrack:
             self.face_area = area
             self.sharpness = sharpness
             self.frontality = frontality
+            self.kps = kps
             self.quality_score = new_quality
         self.last_seen = time.time()
 
@@ -170,18 +172,25 @@ def track_flusher(send_queue, stop_event=None):
                         nparr = np.frombuffer(track.image_bytes, np.uint8)
                         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         if img is not None:
-                            h, w = img.shape[:2]
-                            bw = int(track.bbox[2] - track.bbox[0])
-                            bh = int(track.bbox[3] - track.bbox[1])
-                            padding_x = int(bw * 0.5)
-                            padding_y = int(bh * 0.5)
+                            if getattr(track, 'kps', None) is not None:
+                                from insightface.utils import face_align
+                                face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=512)
+                            else:
+                                h, w = img.shape[:2]
+                                cx = int((track.bbox[0] + track.bbox[2]) / 2)
+                                cy = int((track.bbox[1] + track.bbox[3]) / 2)
+                                bw = int(track.bbox[2] - track.bbox[0])
+                                bh = int(track.bbox[3] - track.bbox[1])
+                                side = max(bw, bh)
+                                padding = int(side * 0.5)
 
-                            x1 = max(0, int(track.bbox[0]) - padding_x)
-                            y1 = max(0, int(track.bbox[1]) - padding_y)
-                            x2 = min(w, int(track.bbox[2]) + padding_x)
-                            y2 = min(h, int(track.bbox[3]) + padding_y)
-                            face_crop = img[y1:y2, x1:x2]
-                            if face_crop.size > 0:
+                                x1 = max(0, cx - padding)
+                                y1 = max(0, cy - padding)
+                                x2 = min(w, cx + padding)
+                                y2 = min(h, cy + padding)
+                                face_crop = img[y1:y2, x1:x2]
+
+                            if face_crop is not None and face_crop.size > 0:
                                 restored = face_restorer.restore_face(face_crop)
                                 if restored is not None:
                                     success, encoded_img = cv2.imencode(".jpg", restored)
@@ -381,10 +390,10 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                                 break
                                                 
                                     if matched_track:
-                                        matched_track.update(bbox, emb, task_id, image_data, sharpness, frontality)
+                                        matched_track.update(bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
                                     else:
                                         # Create new track
-                                        new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality)
+                                        new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
                                         active_tracks[new_track.track_id] = new_track
                                         
                     except Exception as ex:

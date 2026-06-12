@@ -85,12 +85,13 @@ def compute_frontality(face, max_yaw: float = 20.0, max_pitch: float = 20.0, max
 class FaceResult:
     """Result of a face detection."""
 
-    def __init__(self, bbox: list, embedding: np.ndarray, det_score: float, sharpness: float = 0.0, frontality: float = 1.0):
+    def __init__(self, bbox: list, embedding: np.ndarray, det_score: float, sharpness: float = 0.0, frontality: float = 1.0, kps: Optional[list] = None):
         self.bbox = bbox  # [x1, y1, x2, y2]
         self.embedding = embedding  # 512-dim normalized vector
         self.det_score = det_score  # Detection confidence
         self.sharpness = sharpness  # Laplacian variance of the face crop (higher = sharper)
         self.frontality = frontality  # 0.0–1.0 pose frontality score (higher = more frontal)
+        self.kps = kps  # [5, 2] landmarks array
 
 
 def is_frontal_face(face, max_yaw: float = 20.0, max_pitch: float = 20.0, max_roll: float = 20.0) -> bool:
@@ -246,6 +247,8 @@ class FaceEngine:
                 # Compute frontality score (how straight the face is looking)
                 frontality = compute_frontality(face, max_yaw=20.0, max_pitch=20.0, max_roll=20.0)
 
+                kps_list = face.kps.tolist() if face.kps is not None else None
+
                 results.append(
                     FaceResult(
                         bbox=bbox_list,
@@ -253,6 +256,7 @@ class FaceEngine:
                         det_score=float(face.det_score),
                         sharpness=sharpness,
                         frontality=frontality,
+                        kps=kps_list,
                     )
                 )
             return results
