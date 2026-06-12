@@ -107,6 +107,21 @@ export default function CameraFeed({ cameraId, isActive }: CameraFeedProps) {
                   } catch (e) {
                     // Buffer full, skip
                   }
+                  return;
+                }
+
+                // Clean up old buffered data to prevent QuotaExceededError (memory/buffer full freeze)
+                if (videoRef.current && sb.buffered.length > 0 && !sb.updating) {
+                  const start = sb.buffered.start(0);
+                  const current = videoRef.current.currentTime;
+                  if (current - start > 15) {
+                    try {
+                      sb.remove(start, current - 5);
+                      return;
+                    } catch (e) {
+                      // Ignore removal error
+                    }
+                  }
                 }
 
                 // Keep latency low: seek to live edge if behind

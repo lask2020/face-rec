@@ -151,6 +151,12 @@ def track_flusher(send_queue, stop_event=None):
                         del active_tracks[key]
                         
             for track in to_flush:
+                # Discard track if the best frame is still extremely blurry
+                min_track_sharpness = float(os.getenv("MIN_TRACK_SHARPNESS", "30.0"))
+                if track.sharpness < min_track_sharpness:
+                    logger.info(f"Discarding track {track.track_id} on camera {track.camera_id} because best frame sharpness ({track.sharpness:.1f}) is below minimum threshold ({min_track_sharpness:.1f})")
+                    continue
+
                 logger.info(f"Flushing best face track for camera {track.camera_id} (Area: {track.face_area:.0f}, Sharpness: {track.sharpness:.1f}, Frontality: {track.frontality:.2f}, Quality: {track.quality_score:.0f})")
                 add_cooldown(track.embedding)
                 

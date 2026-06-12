@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 # Higher values are stricter. Typical range: 30-100 depending on camera quality.
 SHARPNESS_THRESHOLD = float(os.getenv("FACE_SHARPNESS_THRESHOLD", "50.0"))
 
+# Minimum face bounding box size (width and height in pixels) to be tracked/processed.
+MIN_FACE_SIZE = float(os.getenv("MIN_FACE_SIZE", "45.0"))
+
 
 def compute_sharpness(image: np.ndarray, bbox: list) -> float:
     """
@@ -197,6 +200,14 @@ class FaceEngine:
             results = []
             for face in faces:
                 if face.det_score < 0.5:  # MIN_DET_SCORE
+                    continue
+
+                # Filter out extremely small faces (unrecognizable or far away)
+                x1, y1, x2, y2 = face.bbox
+                width = x2 - x1
+                height = y2 - y1
+                if width < MIN_FACE_SIZE or height < MIN_FACE_SIZE:
+                    logger.debug(f"Skipped small face ({width:.1f}x{height:.1f}px, min required: {MIN_FACE_SIZE}px)")
                     continue
 
                 # Filter out non-frontal faces for real-time tracking
