@@ -88,9 +88,9 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	ictx, cancel := context.WithCancel(ctx)
 	activeCameras[camID] = cancel
 
-	// Register stream in go2rtc first (configured to discard non-keyframes)
+	// Register stream in go2rtc first (configured with ffmpeg video=copy to stabilize Hikvision streams)
 	streamName := fmt.Sprintf("cam_%d", camID)
-	streamSource := fmt.Sprintf("ffmpeg:%s#video=copy#raw=-discard nokey", rtspURL)
+	streamSource := fmt.Sprintf("ffmpeg:%s#video=copy", rtspURL)
 	if err := registerStream(streamName, streamSource); err != nil {
 		log.Printf("[Camera %d] Failed to register in go2rtc: %v. Will retry on capture.", camID, err)
 	} else {
@@ -144,6 +144,15 @@ func registerStream(name, sourceURL string) error {
 func captureLoop(ctx context.Context, camID uint, streamName string, intervalMs int) {
 	log.Printf("[Camera %d] Starting snapshot capture every %dms from go2rtc stream '%s'", camID, intervalMs, streamName)
 
+	// Keep stream alive with a dummy consumer
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/stream.mp4?src=%s", go2rtcURL, streamName), nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			io.Copy(io.Discard, resp.Body)
+		}
+	}()
 	interval := time.Duration(intervalMs) * time.Millisecond
 	client := &http.Client{Timeout: 10 * time.Second}
 	snapshotURL := fmt.Sprintf("%s/api/frame.jpeg?src=%s", go2rtcURL, streamName)

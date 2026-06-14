@@ -547,7 +547,7 @@ func ListSSCameras(c *fiber.Ctx) error {
 
 	responseCameras := make([]fiber.Map, 0)
 	for _, cam := range cameras {
-		rtspURL := fmt.Sprintf("rtsp://dummy:dummy@%s:554/camId=%d&_sid=%s", nasHost, cam.ID, client.SID)
+		rtspURL := fmt.Sprintf("ffmpeg:rtsp://dummy:dummy@%s:554/camId=%d&_sid=%s#video=copy#audio=copy#rtsp_transport=tcp", nasHost, cam.ID, client.SID)
 
 		responseCameras = append(responseCameras, fiber.Map{
 			"ss_id":            cam.ID,
@@ -622,7 +622,7 @@ func ImportSSCameras(c *fiber.Ctx) error {
 			continue
 		}
 
-		rtspURL := fmt.Sprintf("rtsp://dummy:dummy@%s:554/camId=%d&_sid=%s", nasHost, cam.ID, client.SID)
+		rtspURL := fmt.Sprintf("ffmpeg:rtsp://dummy:dummy@%s:554/camId=%d&_sid=%s#video=h264#audio=copy#rtsp_transport=tcp", nasHost, cam.ID, client.SID)
 
 		if existingMap[rtspURL] {
 			skipped++

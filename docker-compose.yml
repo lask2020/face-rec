@@ -72,22 +72,22 @@ services:
     restart: always
 
   # 6. AI Worker Node (Fleet)
-  ai-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    environment:
-      - CONTROL_PLANE_URL=control-plane:50051
-      # To force a specific ONNX Execution Provider:
-      # - ONNX_PROVIDER=OpenVINOExecutionProvider   # For Intel GPU/CPU via OpenVINO
-      # - ONNX_PROVIDER=ROCmExecutionProvider       # For AMD GPU via ROCm (Linux)
-      # - ONNX_PROVIDER=CUDAExecutionProvider       # For NVIDIA GPU via CUDA
-    # Passthrough Intel/AMD onboard GPU devices (Linux only):
-    # devices:
-    #   - /dev/dri:/dev/dri
-    depends_on:
-      - control-plane
-    restart: always
+  # ai-worker:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     - CONTROL_PLANE_URL=control-plane:50051
+  #     # To force a specific ONNX Execution Provider:
+  #     # - ONNX_PROVIDER=OpenVINOExecutionProvider   # For Intel GPU/CPU via OpenVINO
+  #     # - ONNX_PROVIDER=ROCmExecutionProvider       # For AMD GPU via ROCm (Linux)
+  #     # - ONNX_PROVIDER=CUDAExecutionProvider       # For NVIDIA GPU via CUDA
+  #   # Passthrough Intel/AMD onboard GPU devices (Linux only):
+  #   # devices:
+  #   #   - /dev/dri:/dev/dri
+  #   depends_on:
+  #     - control-plane
+  #   restart: always
 
   # 7. Stream Hub (RTSP/WebRTC/HLS) — replaces mediamtx
   go2rtc:
