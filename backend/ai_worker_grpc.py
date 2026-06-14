@@ -13,6 +13,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="insightface")
 import cv2
 import grpc
 import numpy as np
+import concurrent.futures
 
 # Add current directory to path to ensure protobuf imports work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -136,102 +137,204 @@ def add_cooldown(embedding):
         })
 
 
+def flush_track(track, send_queue):
+    # Discard track if the best frame is still extremely blurry
+    min_track_sharpness = float(os.getenv("MIN_TRACK_SHARPNESS", "30.0"))
+    if track.sharpness < min_track_sharpness:
+        logger.info(f"Discarding track {track.track_id} on camera {track.camera_id} because best frame sharpness ({track.sharpness:.1f}) is below minimum threshold ({min_track_sharpness:.1f})")
+        return
+
+    logger.info(f"Flushing best face track for camera {track.camera_id} (Area: {track.face_area:.0f}, Sharpness: {track.sharpness:.1f}, Frontality: {track.frontality:.2f}, Quality: {track.quality_score:.0f})")
+    add_cooldown(track.embedding)
+    
+    restored_face_bytes = b""
+    if face_restorer.is_enabled():
+        try:
+            nparr = np.frombuffer(track.image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is not None:
+                if getattr(track, 'kps', None) is not None:
+                    from insightface.utils import face_align
+                    face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=512)
+                else:
+                    h, w = img.shape[:2]
+                    cx = int((track.bbox[0] + track.bbox[2]) / 2)
+                    cy = int((track.bbox[1] + track.bbox[3]) / 2)
+                    bw = int(track.bbox[2] - track.bbox[0])
+                    bh = int(track.bbox[3] - track.bbox[1])
+                    side = max(bw, bh)
+                    padding = int(side * 0.5)
+
+                    x1 = max(0, cx - padding)
+                    y1 = max(0, cy - padding)
+                    x2 = min(w, cx + padding)
+                    y2 = min(h, cy + padding)
+                    face_crop = img[y1:y2, x1:x2]
+
+                if face_crop is not None and face_crop.size > 0:
+                    restored = face_restorer.restore_face(face_crop)
+                    if restored is not None:
+                        success, encoded_img = cv2.imencode(".jpg", restored)
+                        if success:
+                            restored_face_bytes = encoded_img.tobytes()
+                            logger.info(f"Successfully restored face for track {track.track_id}")
+        except Exception as e:
+            logger.error(f"Error during face restoration in flusher: {e}")
+
+    result = facerec_pb2.InferenceResult(
+        task_id=track.task_id,
+        detections=[facerec_pb2.Detection(
+            bbox=track.bbox,
+            embedding=track.embedding.tolist(),
+            restored_face_jpeg=restored_face_bytes
+        )]
+    )
+    send_queue.put(result)
+
+
 def track_flusher(send_queue, stop_event=None):
     logger.info("Background Face Track Flusher thread started.")
     last_stats_sent = 0
-    while True:
-        if stop_event and stop_event.is_set():
-            logger.info("Flusher stopping due to stop event.")
-            break
-        try:
-            time.sleep(0.5)
-            now = time.time()
-            to_flush = []
-            
-            with tracks_lock:
-                keys = list(active_tracks.keys())
-                for key in keys:
-                    track = active_tracks[key]
-                    if (now - track.last_seen > TRACK_TIMEOUT) or (now - track.first_seen > TRACK_MAX_DURATION):
-                        to_flush.append(track)
-                        del active_tracks[key]
-                        
-            for track in to_flush:
-                # Discard track if the best frame is still extremely blurry
-                min_track_sharpness = float(os.getenv("MIN_TRACK_SHARPNESS", "30.0"))
-                if track.sharpness < min_track_sharpness:
-                    logger.info(f"Discarding track {track.track_id} on camera {track.camera_id} because best frame sharpness ({track.sharpness:.1f}) is below minimum threshold ({min_track_sharpness:.1f})")
-                    continue
-
-                logger.info(f"Flushing best face track for camera {track.camera_id} (Area: {track.face_area:.0f}, Sharpness: {track.sharpness:.1f}, Frontality: {track.frontality:.2f}, Quality: {track.quality_score:.0f})")
-                add_cooldown(track.embedding)
+    max_workers = int(os.getenv("AI_WORKER_CONCURRENCY", "4"))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while True:
+            if stop_event and stop_event.is_set():
+                logger.info("Flusher stopping due to stop event.")
+                break
+            try:
+                time.sleep(0.5)
+                now = time.time()
+                to_flush = []
                 
-                restored_face_bytes = b""
-                if face_restorer.is_enabled():
-                    try:
-                        nparr = np.frombuffer(track.image_bytes, np.uint8)
-                        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        if img is not None:
-                            if getattr(track, 'kps', None) is not None:
-                                from insightface.utils import face_align
-                                face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=512)
-                            else:
-                                h, w = img.shape[:2]
-                                cx = int((track.bbox[0] + track.bbox[2]) / 2)
-                                cy = int((track.bbox[1] + track.bbox[3]) / 2)
-                                bw = int(track.bbox[2] - track.bbox[0])
-                                bh = int(track.bbox[3] - track.bbox[1])
-                                side = max(bw, bh)
-                                padding = int(side * 0.5)
+                with tracks_lock:
+                    keys = list(active_tracks.keys())
+                    for key in keys:
+                        track = active_tracks[key]
+                        if (now - track.last_seen > TRACK_TIMEOUT) or (now - track.first_seen > TRACK_MAX_DURATION):
+                            to_flush.append(track)
+                            del active_tracks[key]
+                            
+                for track in to_flush:
+                    executor.submit(flush_track, track, send_queue)
 
-                                x1 = max(0, cx - padding)
-                                y1 = max(0, cy - padding)
-                                x2 = min(w, cx + padding)
-                                y2 = min(h, cy + padding)
-                                face_crop = img[y1:y2, x1:x2]
+                # Periodically send metrics update (every 2 seconds)
+                if now - last_stats_sent > 2.0:
+                    last_stats_sent = now
+                    with stats_lock:
+                        if recent_process_times:
+                            avg_ms = sum(recent_process_times) / len(recent_process_times)
+                            result = facerec_pb2.InferenceResult(
+                                task_id="metrics",
+                                detections=[],
+                                process_time_ms=avg_ms
+                            )
+                            send_queue.put(result)
 
-                            if face_crop is not None and face_crop.size > 0:
-                                restored = face_restorer.restore_face(face_crop)
-                                if restored is not None:
-                                    success, encoded_img = cv2.imencode(".jpg", restored)
-                                    if success:
-                                        restored_face_bytes = encoded_img.tobytes()
-                                        logger.info(f"Successfully restored face for track {track.track_id}")
-                    except Exception as e:
-                        logger.error(f"Error during face restoration in flusher: {e}")
+                # Clean up inactive cameras to log stop events
+                inactive_timeout = 10.0
+                with cameras_lock:
+                    for cam_id, last_ts in list(last_seen_camera.items()):
+                        if now - last_ts > inactive_timeout:
+                            logger.info(f"Stopped processing stream for Camera {cam_id} (inactive)")
+                            del last_seen_camera[cam_id]
+            except Exception as e:
+                logger.error(f"Error in track_flusher: {e}")
 
+
+def process_task(task_id, image_data, is_reg, send_queue):
+    try:
+        start_time = time.time()
+        # Decode image from JPEG bytes
+        nparr = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            logger.error(f"Failed to decode JPEG image for task {task_id}")
+            if is_reg:
+                duration_ms = (time.time() - start_time) * 1000
+                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[], process_time_ms=duration_ms))
+            return
+            
+        if is_reg:
+            # Registration mode: extract embedding and return immediately
+            emb, err_msg = face_engine.extract_embedding_from_image(img)
+            duration_ms = (time.time() - start_time) * 1000
+            if err_msg is not None:
+                logger.warning(f"Registration face rejected: {err_msg}")
                 result = facerec_pb2.InferenceResult(
-                    task_id=track.task_id,
-                    detections=[facerec_pb2.Detection(
-                        bbox=track.bbox,
-                        embedding=track.embedding.tolist(),
-                        restored_face_jpeg=restored_face_bytes
-                    )]
+                    task_id=task_id,
+                    detections=[],
+                    error_message=err_msg,
+                    process_time_ms=duration_ms
                 )
                 send_queue.put(result)
-
-            # Periodically send metrics update (every 2 seconds)
-            if now - last_stats_sent > 2.0:
-                last_stats_sent = now
-                with stats_lock:
-                    if recent_process_times:
-                        avg_ms = sum(recent_process_times) / len(recent_process_times)
-                        result = facerec_pb2.InferenceResult(
-                            task_id="metrics",
-                            detections=[],
-                            process_time_ms=avg_ms
-                        )
-                        send_queue.put(result)
-
-            # Clean up inactive cameras to log stop events
-            inactive_timeout = 10.0
+            elif emb is not None:
+                result = facerec_pb2.InferenceResult(
+                    task_id=task_id,
+                    detections=[facerec_pb2.Detection(
+                        bbox=[0.0, 0.0, 0.0, 0.0],
+                        embedding=emb.tolist()
+                    )],
+                    process_time_ms=duration_ms
+                )
+                send_queue.put(result)
+            else:
+                logger.warning(f"No face detected in registration image for task {task_id}")
+                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[], error_message="No face detected", process_time_ms=duration_ms))
+        else:
+            # Parse camera_id from task_id (cameraID_timestamp_uuid)
+            parts = task_id.split('_')
+            camera_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+            
+            now_time = time.time()
             with cameras_lock:
-                for cam_id, last_ts in list(last_seen_camera.items()):
-                    if now - last_ts > inactive_timeout:
-                        logger.info(f"Stopped processing stream for Camera {cam_id} (inactive)")
-                        del last_seen_camera[cam_id]
-        except Exception as e:
-            logger.error(f"Error in track_flusher: {e}")
+                if camera_id not in last_seen_camera:
+                    logger.info(f"Started processing stream for Camera {camera_id}")
+                last_seen_camera[camera_id] = now_time
+            
+            faces = face_engine.detect_faces(img)
+            
+            duration_ms = (time.time() - start_time) * 1000
+            if len(faces) > 0:
+                logger.info(f"Processed frame for Camera {camera_id} in {duration_ms:.1f}ms - detected {len(faces)} face(s)")
+            
+            with stats_lock:
+                recent_process_times.append(duration_ms)
+                if len(recent_process_times) > 50:
+                    recent_process_times.pop(0)
+            
+            with tracks_lock:
+                for face in faces:
+                    emb = face.embedding
+                    bbox = face.bbox
+                    sharpness = face.sharpness
+                    frontality = face.frontality
+                    
+                    # Check if on cooldown
+                    if is_on_cooldown(emb):
+                        continue
+                        
+                    # Try to associate with active tracks for this camera
+                    matched_track = None
+                    for track in active_tracks.values():
+                        if track.camera_id == camera_id:
+                            sim = np.dot(emb, track.embedding)
+                            if sim > 0.6:
+                                matched_track = track
+                                break
+                                
+                    if matched_track:
+                        matched_track.update(bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
+                    else:
+                        # Create new track
+                        new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
+                        active_tracks[new_track.track_id] = new_track
+                        
+    except Exception as ex:
+        logger.error(f"Error processing task {task_id}: {ex}")
+        if is_reg:
+            send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[]))
 
 
 def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None):
@@ -299,108 +402,23 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                 responses = stub.ProcessStream(request_generator())
                 logger.info("gRPC stream established. Listening for tasks...")
                 
-                for task in responses:
-                    if stop_event and stop_event.is_set():
-                        break
+                max_workers = int(os.getenv("AI_WORKER_CONCURRENCY", "4"))
+                logger.info(f"Starting ThreadPoolExecutor with {max_workers} workers for bulk processing.")
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    for task in responses:
+                        if stop_event and stop_event.is_set():
+                            break
 
-                    task_id = task.task_id
-                    image_data = task.image_data
-                    is_reg = task.is_registration
-                    
-                    logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}")
-                    
-                    try:
-                        start_time = time.time()
-                        # Decode image from JPEG bytes
-                        nparr = np.frombuffer(image_data, np.uint8)
-                        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                        task_id = task.task_id
+                        image_data = task.image_data
+                        is_reg = task.is_registration
                         
-                        if img is None:
-                            logger.error(f"Failed to decode JPEG image for task {task_id}")
-                            if is_reg:
-                                duration_ms = (time.time() - start_time) * 1000
-                                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[], process_time_ms=duration_ms))
-                            continue
-                            
-                        if is_reg:
-                            # Registration mode: extract embedding and return immediately
-                            emb, err_msg = face_engine.extract_embedding_from_image(img)
-                            duration_ms = (time.time() - start_time) * 1000
-                            if err_msg is not None:
-                                logger.warning(f"Registration face rejected: {err_msg}")
-                                result = facerec_pb2.InferenceResult(
-                                    task_id=task_id,
-                                    detections=[],
-                                    error_message=err_msg,
-                                    process_time_ms=duration_ms
-                                )
-                                send_queue.put(result)
-                            elif emb is not None:
-                                result = facerec_pb2.InferenceResult(
-                                    task_id=task_id,
-                                    detections=[facerec_pb2.Detection(
-                                        bbox=[0.0, 0.0, 0.0, 0.0],
-                                        embedding=emb.tolist()
-                                    )],
-                                    process_time_ms=duration_ms
-                                )
-                                send_queue.put(result)
-                            else:
-                                logger.warning(f"No face detected in registration image for task {task_id}")
-                                send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[], error_message="No face detected", process_time_ms=duration_ms))
-                        else:
-                            # Parse camera_id from task_id (cameraID_timestamp_uuid)
-                            parts = task_id.split('_')
-                            camera_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
-                            
-                            now_time = time.time()
-                            with cameras_lock:
-                                if camera_id not in last_seen_camera:
-                                    logger.info(f"Started processing stream for Camera {camera_id}")
-                                last_seen_camera[camera_id] = now_time
-                            
-                            faces = face_engine.detect_faces(img)
-                            
-                            duration_ms = (time.time() - start_time) * 1000
-                            logger.info(f"Processed frame for Camera {camera_id} in {duration_ms:.1f}ms - detected {len(faces)} face(s)")
-                            
-                            with stats_lock:
-                                recent_process_times.append(duration_ms)
-                                if len(recent_process_times) > 50:
-                                    recent_process_times.pop(0)
-                            
-                            with tracks_lock:
-                                for face in faces:
-                                    emb = face.embedding
-                                    bbox = face.bbox
-                                    sharpness = face.sharpness
-                                    frontality = face.frontality
-                                    
-                                    # Check if on cooldown
-                                    if is_on_cooldown(emb):
-                                        continue
-                                        
-                                    # Try to associate with active tracks for this camera
-                                    matched_track = None
-                                    for track in active_tracks.values():
-                                        if track.camera_id == camera_id:
-                                            sim = np.dot(emb, track.embedding)
-                                            if sim > 0.6:
-                                                matched_track = track
-                                                break
-                                                
-                                    if matched_track:
-                                        matched_track.update(bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
-                                    else:
-                                        # Create new track
-                                        new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
-                                        active_tracks[new_track.track_id] = new_track
-                                        
-                    except Exception as ex:
-                        logger.error(f"Error processing task {task_id}: {ex}")
-                        if is_reg:
-                            send_queue.put(facerec_pb2.InferenceResult(task_id=task_id, detections=[]))
-                            
+                        logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}")
+                        
+                        # Submit task to thread pool
+                        executor.submit(process_task, task_id, image_data, is_reg, send_queue)
+                        
         except grpc.RpcError as e:
             logger.error(f"gRPC stream connection error: {e.details() if hasattr(e, 'details') else e}. Retrying in 5 seconds...")
             sleep_interruptible(5)
