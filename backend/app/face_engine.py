@@ -8,6 +8,8 @@ and the Go Control Plane manages vector search.
 
 import os
 import logging
+import threading
+import traceback
 from typing import Optional
 
 import cv2
@@ -122,6 +124,7 @@ class FaceEngine:
         self.model = None
         self.embedding_dim = 512
         self._initialized = False
+        self._inference_lock = threading.Lock()
 
     def initialize(self):
         """Load the InsightFace model."""
@@ -195,27 +198,13 @@ class FaceEngine:
             self.model.prepare(ctx_id=0, det_size=(det_size_val, det_size_val))
             
             # FIX: Reorder SCRFD detection model outputs for DirectML compatibility.
-            # DirectML (and potentially other providers) may return output tensors in a
-            # different order than CPUExecutionProvider. InsightFace's RetinaFace.forward()
-            # accesses outputs by index assuming: [scores..., bboxes..., kps...] grouped
-            # by stride. We fix this by sorting output_names based on output shapes:
-            #   - last_dim == 1  → score tensors
-            #   - last_dim == 4  → bbox tensors
-            #   - last_dim == 10 → keypoint tensors
-            # Within each group, sort by spatial dimension descending (larger = smaller stride).
             self._fix_det_output_order()
             
-            # Safety fallback: patch recognition model to not crash if kps is still missing
-            # (e.g., if a face is detected but kps extraction fails for other reasons)
-            if self.model and 'recognition' in self.model.models:
-                orig_get = self.model.models['recognition'].get
-                def safe_get(img, face):
-                    if getattr(face, 'kps', None) is None:
-                        face.embedding = None
-                        face.normed_embedding = None
-                        return None
-                    return orig_get(img, face)
-                self.model.models['recognition'].get = safe_get
+            # FIX: Override FaceAnalysis.get() to handle missing keypoints (kps=None).
+            # DirectML may fail to produce valid keypoints, and the recognition model
+            # (ArcFaceONNX) crashes on face_align.norm_crop(landmark=None) which calls
+            # lmk.shape on None. We also add a lock for thread-safety with GPU providers.
+            self._patch_face_analysis_get()
                 
             logger.info(f"InsightFace model 'buffalo_l' loaded successfully with det_size={det_size_val}x{det_size_val}")
         except Exception as e:
@@ -292,6 +281,62 @@ class FaceEngine:
         else:
             logger.debug("SCRFD detection output order is already correct")
 
+    def _patch_face_analysis_get(self):
+        """
+        Override FaceAnalysis.get() for GPU provider compatibility.
+
+        Problems solved:
+        1. Thread safety: GPU providers (DirectML, CUDA) may not be thread-safe
+           when multiple workers call session.run() concurrently → serialize with lock.
+        2. Missing keypoints: DirectML may fail to produce valid kps, causing
+           ArcFaceONNX.get() to crash in face_align.norm_crop(landmark=None).
+           We skip recognition when kps is None instead of crashing.
+        3. Resilience: Wrap each sub-model call in try/except so a single model
+           failure doesn't lose the entire detection.
+        """
+        if self.model is None:
+            return
+
+        fa = self.model  # FaceAnalysis instance
+        inference_lock = self._inference_lock
+
+        def safe_get(img, max_num=0):
+            with inference_lock:
+                bboxes, kpss = fa.det_model.detect(img, max_num=max_num, metric='default')
+
+            if bboxes.shape[0] == 0:
+                return []
+
+            ret = []
+            for i in range(bboxes.shape[0]):
+                bbox = bboxes[i, 0:4]
+                det_score = bboxes[i, 4]
+                kps = None
+                if kpss is not None:
+                    kps = kpss[i]
+
+                from insightface.app.common import Face
+                face = Face(bbox=bbox, kps=kps, det_score=det_score)
+
+                for taskname, model in fa.models.items():
+                    if taskname == 'detection':
+                        continue
+                    # Skip recognition if keypoints are missing (prevents norm_crop crash)
+                    if kps is None and taskname == 'recognition':
+                        face.embedding = None
+                        face.normed_embedding = None
+                        continue
+                    try:
+                        with inference_lock:
+                            model.get(img, face)
+                    except Exception as e:
+                        logger.warning(f"Sub-model '{taskname}' failed for face {i}: {e}")
+
+                ret.append(face)
+            return ret
+
+        fa.get = safe_get
+        logger.info("Patched FaceAnalysis.get() for GPU thread-safety and kps=None handling")
 
     def detect_faces(self, frame: np.ndarray) -> list[FaceResult]:
         """
@@ -360,7 +405,7 @@ class FaceEngine:
                 )
             return results
         except Exception as e:
-            logger.error(f"Face detection error: {e}")
+            logger.error(f"Face detection error: {e}\n{traceback.format_exc()}")
             return []
 
     def extract_embedding_from_image(self, img: np.ndarray) -> tuple[Optional[np.ndarray], Optional[str]]:
