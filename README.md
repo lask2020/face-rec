@@ -1,239 +1,452 @@
-# Face Recognition CCTV System (Distributed Architecture)
+# Face Recognition CCTV System — Distributed Architecture
 
-ระบบวิเคราะห์และจดจำใบหน้าจากกล้อง CCTV แบบกระจายศูนย์ (Distributed Architecture) ที่รองรับการประมวลผลกล้องจำนวนมากแบบ Real-time โดยส่งเฟรมภาพผ่าน Redis Stream และประมวลผล AI ด้วย Python worker ผ่าน gRPC แบบ Stateless พร้อมหน้าแดชบอร์ดควบคุมระบบ (Admin Dashboard)
-
-## 🏗️ System Architecture
-
-ระบบถูกออกแบบให้เป็น **Distributed Microservices** เพื่อรองรับการสเกลอย่างมีประสิทธิภาพ:
-
-```mermaid
-graph TD
-    %% Source
-    CCTV[CCTV Cameras] -->|RTSP Stream| Go2RTC[Go2RTC Stream Hub]
-
-    %% Ingestion
-    Ingestion[Go Ingestion Worker] -->|Fetch RTSP Frames| Go2RTC
-    Ingestion -->|Publish JPEG Frames| Redis[(Redis Stream: image.queue)]
-
-    %% Control Plane
-    ControlPlane[Go Control Plane] -->|Consume Frames| Redis
-    ControlPlane <-->|gRPC Bidirectional Stream| AIWorker[Python AI Worker Node]
-
-    %% External Systems / Storage
-    ControlPlane -->|Vector Search| Qdrant[(Qdrant Vector DB)]
-    ControlPlane -->|Save Snaps & Crops| RustFS[(RustFS S3 Storage)]
-    ControlPlane -->|Save Logs & Metadata| Postgres[(PostgreSQL)]
-
-    %% Frontend
-    ControlPlane -->|WS Real-time Alerts| Frontend[React Admin Dashboard]
-    Frontend -->|HTTP REST APIs| ControlPlane
-    Frontend -->|WebRTC Live Stream| Go2RTC
-```
-
-### รายละเอียดการทำงานของแต่ละส่วน (Component Details)
-1. **Go2RTC Stream Hub (Port 1984, 8554, 8555)**: ทำหน้าที่จัดการและแปลงสตรีมกล้อง RTSP/WebRTC ให้พร้อมใช้งานสำหรับทั้ง Ingester และ หน้าจอ Frontend (WebRTC)
-2. **Go Ingestion (go-ingestion)**: ดึงเฟรมจาก go2rtc จากนั้นย่อ/แปลงรูปเป็น JPEG แล้วนำไปใส่ไว้ใน Redis Stream (`image.queue`) ช่วยถอดรหัสและส่งผ่านวิดีโอประสิทธิภาพสูง
-3. **Go Control Plane (go-control-plane) (Port 8000, 50051)**:
-   - เป็น Core Controller ของระบบ
-   - ควบคุมการโหลดเฟรมจาก Redis Stream และจ่ายงาน (Dispatch) ให้กับ AI Worker ที่ว่างผ่าน gRPC stream
-   - จัดการ Vector search บน Qdrant
-   - ทำการ Crop ใบหน้าแบบ JPEG จากกล้อง และบันทึกรูป Snapshot และ Crop ลง S3 (RustFS)
-   - จัดการข้อมูลของระเบียนประชากร กล้อง และบันทึกประวัติการตรวจจับลง PostgreSQL
-   - ให้บริการ API แก่ Frontend (REST + WebSocket Real-time Broadcast)
-4. **Python AI Worker (backend) (gRPC Client)**:
-   - ประมวลผล AI แบบ **Stateless** เชื่อมต่อไปยัง Control Plane
-   - ใช้ **InsightFace (buffalo_l + ArcFace)** ในการตรวจจับและดึง face embedding
-   - **Worker-side Face Tracking & Quality Buffering**: ติดตามใบหน้าบนฝั่ง worker และเก็บสะสมเฟรมที่มีคุณภาพใบหน้าดีที่สุด (Face Area ขนาดใหญ่ที่สุด) ในหน้าต่างการตรวจจับ เพื่อส่งเฉพาะรูปและ embedding ที่ดีที่สุดกลับไปที่ Control Plane ช่วยประหยัดแบนด์วิดท์และลดภาระของระบบหลังบ้านได้อย่างมหาศาล
-   - **Local Cooldown**: กำหนดคูลดาวน์ (30 วินาที) ของแต่ละใบหน้าบนฝั่ง worker เพื่อป้องกันการตรวจจับซ้ำซาก
-5. **React Dashboard Frontend (frontend) (Port 80)**:
-   - แดชบอร์ดแนวโมเดิร์นแบบ Premium Glassmorphism (Dark Mode)
-   - หน้าสำหรับดู Live กล้องสดผ่าน WebRTC (เชื่อมต่อ go2rtc)
-   - ระบบบริหารจัดการกล้อง (Camera Management)
-   - ระบบลงทะเบียนใบหน้า (Face Management) รองรับการอัปโหลดใบหน้าทีละหลายรูป
-   - ระบบดูประวัติการตรวจจับ (Detection Logs) แสดงผลแบบเปรียบเทียบรูป Snapshot, Face Crop, และหน้าจริงที่ลงทะเบียนไว้เคียงข้างกัน (Side-by-Side comparison)
+ระบบวิเคราะห์และจดจำใบหน้าจากกล้อง CCTV แบบกระจายศูนย์ (Distributed Microservices) รองรับกล้องหลายตัวพร้อมกันแบบ Real-time โดยใช้ Redis Stream เป็นตัวกลางส่งเฟรม, Python AI Worker ประมวลผล InsightFace ผ่าน gRPC Bidirectional Stream, และ React Dashboard สำหรับดูสดและบริหารจัดการระบบ
 
 ---
 
-## ⚡ Tech Stack
+## สถาปัตยกรรมระบบ (System Architecture)
+
+```
+CCTV Cameras
+    │ RTSP Stream
+    ▼
+Go2RTC Stream Hub  ──────────────────────────────────────┐
+    │ HTTP JPEG Frames                                    │ WebRTC (Frontend)
+    ▼                                                     │
+Go Ingestion Worker                                       │
+    │ Publish JPEG + camera_id + ts                       │
+    ▼                                                     │
+Redis Stream (image.queue)                                │
+    │ XReadGroup                                          │
+    ▼                                                     │
+Go Control Plane  ◄──────────────────────────────────────┘
+    │ gRPC Bidirectional Stream (FrameTask / InferenceResult)
+    ▼
+Python AI Worker(s) [Stateless Fleet]
+    │ InsightFace buffalo_l + ArcFace 512-dim Embedding
+    │ Face Tracking + Quality Buffer + Cooldown
+    │ CodeFormer Face Restoration (optional)
+    └────────────────────────────────────────────────────►
+                                                Go Control Plane
+                                                    │
+                                         ┌──────────┼──────────────┐
+                                         ▼          ▼              ▼
+                                     Qdrant      RustFS S3     PostgreSQL
+                                  (Vector DB)  (Snapshots,   (Persons, Cameras,
+                                                Crops, etc.)  Detection Logs)
+                                                    │
+                                                    ▼
+                                         React Admin Dashboard
+                                       (REST API + WebSocket)
+```
+
+---
+
+## รายละเอียดแต่ละ Component
+
+### 1. Go2RTC Stream Hub (Port 1984 / 8554 / 8555)
+- รับ RTSP Stream จากกล้อง CCTV
+- แปลงและกระจาย Stream ไปยัง Ingestion Worker (JPEG) และ Frontend (WebRTC)
+- ตั้งค่าใน [`go2rtc.yaml`](go2rtc.yaml)
+
+### 2. Go Ingestion Worker (`go-ingestion`)
+- ดึงเฟรม JPEG จาก go2rtc ผ่าน HTTP Snapshot
+- ส่ง `camera_id`, `ts` (Unix ms), และ `data` (JPEG bytes) เข้า Redis Stream `image.queue`
+- รองรับ FPS throttle ต่อกล้อง
+
+### 3. Go Control Plane (`go-control-plane`) — Port 8000 (REST) / 50051 (gRPC)
+ส่วนหลักของระบบ มีหน้าที่หลัก 4 อย่าง:
+
+| หน้าที่ | รายละเอียด |
+|---------|-----------|
+| **Frame Dispatcher** | อ่านเฟรมจาก Redis Stream และส่งไปยัง AI Worker ที่ว่าง (Sticky Routing ต่อกล้อง + Rebalance อัตโนมัติ) |
+| **gRPC Server** | รับ `InferenceResult` จาก Worker, ค้นหา embedding ใน Qdrant, บันทึก Log/Snapshot/Crop ลง PostgreSQL + S3 |
+| **REST API** | CRUD Cameras, Persons (Face Registration), Detection Logs + Static file proxy |
+| **WebSocket Broadcast** | Push real-time detection events ไปยัง Frontend ทุก Client พร้อมกัน |
+
+**Sticky Camera Routing**: แต่ละกล้องจะถูก Assign ให้ Worker คนเดิมตลอด เพื่อให้ Face Tracking บน Worker ทำงานได้ถูกต้อง เมื่อมี Worker ใหม่เชื่อมต่อเข้ามาจะทำ Rebalance อัตโนมัติ
+
+### 4. Python AI Worker (`backend`) — Stateless gRPC Client
+
+**Pipeline การประมวลผล:**
+
+```
+รับ FrameTask (JPEG bytes, task_id, is_registration)
+    │
+    ├─ [Registration Mode] extract_embedding_from_image()
+    │      ├─ Single-face gate
+    │      ├─ Frontality gate (±15°)
+    │      ├─ Sharpness gate (Laplacian ≥ 60)
+    │      └─ ส่ง embedding กลับทันที
+    │
+    └─ [Detection Mode] detect_faces()
+           ├─ InsightFace buffalo_l (SCRFD Detection + ArcFace 512-dim)
+           ├─ Filter: det_score ≥ 0.5, face_size ≥ 45px, frontality ≤ 20°
+           └─ Face Tracking + Quality Buffer (per camera_id)
+                  │
+                  ├─ Match ด้วย Cosine Similarity > 0.6
+                  ├─ Quality Score = face_area × frontality
+                  ├─ เลือกเฟรมที่ดีที่สุด (sharp > blurry → quality score)
+                  └─ Flush เมื่อ timeout (3s) หรือ max_duration (5s)
+                         │
+                         ├─ Cooldown check (Cosine > 0.6 → skip 30s)
+                         ├─ Sharpness check (MIN_TRACK_SHARPNESS ≥ 30)
+                         ├─ [Optional] CodeFormer Face Restoration
+                         └─ ส่ง InferenceResult กลับ Control Plane
+```
+
+**Hardware Acceleration** — รองรับ ONNX Runtime Execution Providers:
+- `CoreMLExecutionProvider` — Apple Silicon / macOS
+- `CUDAExecutionProvider` — NVIDIA GPU
+- `ROCmExecutionProvider` — AMD GPU (Linux)
+- `OpenVINOExecutionProvider` — Intel CPU/GPU
+- `DmlExecutionProvider` — Windows DirectML (AMD/Intel/NVIDIA)
+- `CPUExecutionProvider` — CPU Fallback
+
+**GPU Compatibility Fixes ที่ทำไว้:**
+- Patch SCRFD output tensor ordering สำหรับ DirectML/non-CPU providers
+- Patch `FaceAnalysis.get()` เพื่อ handle `kps=None` และ Thread-safety lock สำหรับ GPU inference
+- Pose estimation fallback จาก 5 facial landmarks เมื่อไม่มี `pose` attribute
+
+### 5. React Admin Dashboard (`frontend`) — Port 80
+
+| หน้า | ฟีเจอร์ |
+|------|---------|
+| **Live Monitor** | ดูกล้องสดผ่าน WebRTC (go2rtc) + Real-time detection alerts ผ่าน WebSocket |
+| **Camera Management** | CRUD กล้อง (ชื่อ, RTSP URL, FPS Process), Start/Stop stream |
+| **Person Management** | ลงทะเบียนใบหน้า (อัปโหลดหลายรูป, Quality gate), แก้ไข/ลบ |
+| **Detection Logs** | ประวัติการตรวจจับ — Snapshot, Face Crop, Restored Face (CodeFormer), เปรียบเทียบ Side-by-Side |
+| **AI Workers** | ดูสถานะ Worker ที่เชื่อมต่อ, Avg process time, Pause/Resume |
+| **Signage Dashboard** | หน้าจอแสดงผลแยกสำหรับติดจอสาธารณะ (Real-time alert pop-up) |
+
+---
+
+## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
-| **Control Plane** | Go 1.20+, Fiber, GORM, gRPC Server |
-| **Ingestion Worker** | Go 1.20+, go2rtc clients |
-| **AI Worker** | Python 3.10+, gRPC Client, InsightFace, OpenCV |
-| **Vector Database** | Qdrant (Vector similarity search) |
-| **Relational Database** | PostgreSQL (Metadata, config, logs) |
-| **Object Storage** | RustFS (S3-compatible storage) |
-| **Message Broker** | Redis (Streams & IPC) |
-| **Media Stream Server** | go2rtc (WebRTC, RTSP, HLS) |
-| **Frontend** | React 18, TypeScript, Vite, WebRTC |
+| Control Plane | Go 1.20+, Fiber v2, GORM, gRPC Server |
+| Ingestion Worker | Go 1.20+ |
+| AI Worker | Python 3.10+, InsightFace (buffalo_l), ONNX Runtime, OpenCV, gRPC |
+| Face Restoration | CodeFormer (ONNX) — optional |
+| Vector Database | Qdrant (512-dim cosine similarity search) |
+| Relational Database | PostgreSQL 15 (Persons, Cameras, Detection Logs) |
+| Object Storage | RustFS (S3-compatible — Snapshots, Face Crops, Restored Faces) |
+| Message Broker | Redis 7 (Streams) |
+| Media Stream | go2rtc (RTSP → WebRTC/HLS/JPEG) |
+| Frontend | React 18, TypeScript, Vite, WebSocket |
+| Containerization | Docker + Docker Compose |
 
 ---
 
-## 🚀 Quick Start (ด้วย Docker Compose)
+## Quick Start (Docker Compose)
 
-ทางเลือกที่ดีที่สุดในการเริ่มใช้งานระบบคือการรันผ่าน Docker Compose ซึ่งจะสร้างโครงสร้างพื้นฐานและบริการทั้งหมดขึ้นมาโดยอัตโนมัติ
+### Prerequisites
+- Docker + Docker Compose (หรือ Docker Desktop)
 
-### สิ่งที่จำเป็นต้องมี (Prerequisites)
-- Docker และ Docker Compose (หรือ Docker Desktop)
+### ขั้นตอน
 
-### ขั้นตอนการรัน
+**1. ตั้งค่ากล้อง CCTV ใน `go2rtc.yaml`:**
+```yaml
+streams:
+  cam_1:
+    - rtsp://admin:password@192.168.1.100/stream1
+  cam_2:
+    - rtsp://admin:password@192.168.1.101/stream1
+```
 
-1. **โคลนและเตรียมไฟล์คอนฟิก**
-   ตรวจสอบความถูกต้องของ RTSP Streams ในไฟล์ `go2rtc.yaml` ก่อนรัน:
-   ```yaml
-   streams:
-     cam_2:
-       - rtsp://your-camera-url
-   ```
+**2. เริ่มต้นระบบด้วย `deploy.sh`:**
+```bash
+chmod +x deploy.sh
 
-2. **สั่งรันและจัดการระบบผ่านสคริปต์อำนวยความสะดวก (deploy.sh)**
-   คุณสามารถจัดการและ Deploy บริการต่างๆ ได้ง่ายผ่านสคริปต์ `deploy.sh`:
-   ```bash
-   # เริ่มต้นใช้งานโดยให้สิทธิ์การรัน (ทำครั้งแรกครั้งเดียว)
-   chmod +x deploy.sh
+# Full redeploy (down → build → up)
+./deploy.sh
 
-   # 1. สั่งรันระบบทั้งหมดแบบ Full Redeploy (down, build, และ start)
-   ./deploy.sh
-   
-   # 2. ดูสถานะคอนเทนเนอร์ทั้งหมด
-   ./deploy.sh status
-   
-   # 3. ดู Logs การทำงานทั้งหมด หรือแยกบริการ
-   ./deploy.sh logs
-   ./deploy.sh logs ai-worker
-   
-   # 4. สั่ง rebuild และ redeploy เฉพาะบางบริการ (เช่น เมื่อมีการแก้ไขโค้ด)
-   ./deploy.sh ai-worker
-   ./deploy.sh control-plane
-   ./deploy.sh ingestion
-   ./deploy.sh frontend
-   ```
-   
-   หรือหากต้องการรันด้วย Docker Compose แบบดั้งเดิม:
-   ```bash
-   docker compose up --build -d
-   ```
-   คำสั่งเหล่านี้จะทำการ build อิมเมจของ Frontend, Go Control Plane, Go Ingestion, และ Python AI Worker รวมถึงดึงอิมเมจของฐานข้อมูลต่างๆ ที่จำเป็น
+# Rebuild เฉพาะ service
+./deploy.sh ai-worker
+./deploy.sh control-plane
+./deploy.sh ingestion
+./deploy.sh frontend
 
+# ดู status และ logs
+./deploy.sh status
+./deploy.sh logs
+./deploy.sh logs ai-worker
+```
 
-3. **พอร์ตที่เปิดให้บริการ (Port Map)**
-   - 💻 **Frontend Dashboard**: http://localhost (Port 80)
-   - ⚙️ **Control Plane API**: http://localhost:8000
-   - 👁️ **go2rtc Web UI**: http://localhost:1984
-   - 🗄️ **RustFS Console**: http://localhost:9001 (User: `admin`, Pass: `admin12345`)
-   - 🔍 **Qdrant API Dashboard**: http://localhost:6333/dashboard
+หรือรันตรงด้วย Docker Compose:
+```bash
+docker compose up --build -d
+```
+
+> **หมายเหตุ:** `ai-worker` ใน `docker-compose.yml` ถูก comment ไว้โดย default  
+> เพราะ AI Worker มักรันแยกบน Windows/macOS เพื่อใช้ GPU ของเครื่อง  
+> (ดูส่วน Windows EXE / Native Run ด้านล่าง)
+
+### Port Map
+
+| URL | Service |
+|-----|---------|
+| http://localhost | Frontend Dashboard |
+| http://localhost:8000 | Control Plane REST API |
+| http://localhost:1984 | go2rtc Web UI |
+| http://localhost:9001 | RustFS Console (admin / admin12345) |
+| http://localhost:6333/dashboard | Qdrant Dashboard |
 
 ---
 
-## 🛠️ โครงสร้างโปรเจกต์ (Project Structure)
+## โครงสร้างโปรเจกต์
 
 ```
 face-rec/
-├── backend/                  # Python AI Worker
+├── backend/                        # Python AI Worker
 │   ├── app/
-│   │   └── face_engine.py    # InsightFace Wrapper
-│   ├── ai_worker_grpc.py     # gRPC client, Tracking & Quality buffer
-│   ├── requirements.txt      # Python dependencies
-│   └── Dockerfile            # Python Worker Docker configuration
-├── go-control-plane/         # Go API & Controller (The Brain)
-│   ├── db.go                 # GORM Database models & postgres config
-│   ├── draw.go               # draw bboxes & CropJPEG functions
-│   ├── grpc_server.go        # gRPC Server & Redis Stream consumer
-│   ├── handlers.go           # REST APIs (Cameras, Persons, Detections)
-│   ├── main.go               # Application entry point
-│   ├── qdrant.go             # Qdrant Vector integration
-│   ├── s3.go                 # S3 (RustFS) integration
+│   │   ├── face_engine.py          # InsightFace wrapper, FaceResult, quality scoring
+│   │   ├── face_restorer.py        # CodeFormer ONNX face restoration (optional)
+│   │   └── gpu_lock.py             # Global inference lock for GPU thread safety
+│   ├── ai_worker_grpc.py           # gRPC client, FaceTrack, quality buffer, cooldown
+│   ├── ai_worker_gui.py            # Windows GUI wrapper (PyQt6)
+│   ├── data/
+│   │   └── codeformer.onnx         # CodeFormer model (optional)
+│   ├── facerec_pb2.py              # Generated protobuf (Python)
+│   ├── facerec_pb2_grpc.py         # Generated gRPC stubs (Python)
+│   ├── requirements.txt
+│   ├── build_win.bat               # Windows PyInstaller build script
+│   ├── build_mac.sh                # macOS PyInstaller build script
 │   └── Dockerfile
-├── go-ingestion/             # Go Frame Ingestion Worker
-│   ├── main.go               # RTSP stream decoder -> Redis Stream push
+├── go-control-plane/               # Go API & Controller
+│   ├── main.go                     # Entry point, Fiber router, WebSocket hub
+│   ├── grpc_server.go              # gRPC server, frame dispatcher, sticky routing
+│   ├── handlers.go                 # REST handlers (Cameras, Persons, Detections, Workers)
+│   ├── db.go                       # GORM models (Camera, Person, FaceVector, DetectionLog)
+│   ├── qdrant.go                   # Qdrant vector upsert/search
+│   ├── s3.go                       # RustFS/S3 upload helper
+│   ├── draw.go                     # BBox drawing, JPEG crop utilities
+│   ├── redis.go                    # Redis client + camera assignment pub/sub
+│   ├── synology.go                 # (Optional) Synology NAS integration
+│   ├── facerec/                    # Generated protobuf (Go)
 │   └── Dockerfile
-├── frontend/                 # React UI
+├── go-ingestion/                   # Go Frame Ingestion Worker
+│   ├── main.go                     # go2rtc snapshot poll → Redis Stream push
+│   └── Dockerfile
+├── frontend/                       # React Admin Dashboard
 │   ├── src/
-│   │   ├── pages/            # Dashboard, Detections, Persons, Cameras
-│   │   ├── components/       # Custom modals & visual components
-│   │   └── api/              # API Client (Axios + WS endpoints)
+│   │   ├── App.tsx                 # Router + layout
+│   │   └── ...                     # Pages: Dashboard, Cameras, Persons, Detections, Signage
 │   └── Dockerfile
-├── facerec.proto             # gRPC Protobuf definition
-├── go2rtc.yaml               # Media stream config
-└── docker-compose.yml        # Orchestration configurations
+├── facerec.proto                   # gRPC Protobuf definition (source of truth)
+├── go2rtc.yaml                     # Media stream config
+├── docker-compose.yml              # Service orchestration
+├── deploy.sh                       # Deploy helper script
+└── worker_config.json              # Native worker config (URL + ONNX provider)
 ```
 
 ---
 
-## ⚙️ Configuration & Environment Variables
+## Configuration
 
-คุณสามารถปรับแต่งพฤติกรรมของระบบผ่านตัวแปรสภาพแวดล้อม (Environment Variables) ใน `docker-compose.yml`:
+### Environment Variables — AI Worker (`backend`)
 
-### AI Worker (`backend`)
-- `CONTROL_PLANE_URL`: ชี้ไปยังที่อยู่ gRPC server (เช่น `control-plane:50051`)
-- **โค้ดภายใน**:
-  - `TRACK_TIMEOUT = 3.0` (วินาที): ตรวจจับว่าไม่มีใบหน้านั้นเกิน 3 วินาที จะถือว่าสิ้นสุด track
-  - `TRACK_MAX_DURATION = 5.0` (วินาที): บังคับ flush หน้าดีที่สุด หากตรวจจับแช่อยู่นานเกิน 5 วินาที
-  - `COOLDOWN_DURATION = 30.0` (วินาที): ป้องกันการยิงหน้าซ้ำในช่วงเวลาคูลดาวน์
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONTROL_PLANE_URL` | `localhost:50051` | gRPC server address |
+| `ONNX_PROVIDER` | (auto-detect) | Force a specific ONNX provider |
+| `FACE_DETECTION_SIZE` | `640` | SCRFD detection input size (640 แนะนำสำหรับ CoreML) |
+| `MIN_FACE_SIZE` | `45.0` | ขนาดใบหน้าขั้นต่ำ (px) ที่จะประมวลผล |
+| `FACE_SHARPNESS_THRESHOLD` | `50.0` | Laplacian variance threshold สำหรับ tracking |
+| `MIN_TRACK_SHARPNESS` | `30.0` | Sharpness ขั้นต่ำก่อน flush track |
+| `AI_WORKER_CONCURRENCY` | `4` | จำนวน thread สำหรับประมวลผลเฟรมพร้อมกัน |
+| `FACE_DATA_ROOT` | (auto) | โฟลเดอร์ InsightFace models |
 
-### Go Control Plane (`go-control-plane`)
-- `REDIS_URL`: ที่อยู่ของ Redis Broker (เช่น `redis:6379`)
-- `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`: การเชื่อมต่อฐานข้อมูล PostgreSQL
-- `QDRANT_URL`: ที่อยู่บริการ Qdrant Vector Database (เช่น `http://qdrant:6333`)
-- `S3_ENDPOINT`: ที่อยู่บริการ RustFS S3 (เช่น `rustfs:9000`)
-- `GO2RTC_URL`: ที่อยู่ตัวกลางจัดการวิดีโอ (เช่น `http://go2rtc:1984`)
+**ค่าคงที่ใน `ai_worker_grpc.py`:**
+- `TRACK_TIMEOUT = 3.0s` — หากไม่เห็นใบหน้าเกิน 3 วินาที → flush
+- `TRACK_MAX_DURATION = 5.0s` — บังคับ flush หาก track นานเกิน 5 วินาที
+- `COOLDOWN_DURATION = 30.0s` — cooldown หลัง flush เพื่อป้องกันการยิงซ้ำ
+
+### Environment Variables — Go Control Plane
+
+| Variable | Example |
+|----------|---------|
+| `REDIS_URL` | `redis:6379` |
+| `POSTGRES_HOST` | `postgres` |
+| `POSTGRES_PORT` | `5432` |
+| `POSTGRES_USER` | `root` |
+| `POSTGRES_PASSWORD` | `password` |
+| `POSTGRES_DB` | `facerec` |
+| `QDRANT_URL` | `http://qdrant:6333` |
+| `S3_ENDPOINT` | `rustfs:9000` |
+| `S3_ACCESS_KEY` | `admin` |
+| `S3_SECRET_KEY` | `admin12345` |
+| `S3_FACES_BUCKET` | `faces` |
+| `S3_SNAPSHOTS_BUCKET` | `snapshots` |
+| `GO2RTC_URL` | `http://go2rtc:1984` |
 
 ---
 
-## 🎮 Hardware Acceleration (NVIDIA / AMD / Intel Onboard)
+## Hardware Acceleration
 
-ระบบรองรับการใช้ฮาร์ดแวร์เร่งความเร็วในการประมวลผลโมเดลตรวจจับใบหน้า (InsightFace / ONNX Runtime) เพื่อเพิ่มประสิทธิภาพและความรวดเร็วในการทำงาน:
+### Docker (Linux)
 
-### 1. วิธีเลือกแพ็กเกจ ONNX Runtime
-เปิดไฟล์ [requirements.txt](file:///Users/n.kittichaiwattanaku/Documents/face-rec/backend/requirements.txt) และเลือกติดตั้งแพ็กเกจที่ตรงตามประเภทของการ์ดจอ/ฮาร์ดแวร์ของคุณ (เปิดใช้งานเพียงตัวเดียว และให้ปิดตัวอื่นเป็น comment ไว้เพื่อป้องกันปัญหาแพ็กเกจชนกัน):
-* **Intel Onboard GPU / CPU**: ใช้ `onnxruntime-openvino` (แนะนำอย่างยิ่งสำหรับประมวลผลบนชิปกราฟิกออนบอร์ดของ Intel)
-* **AMD GPU (Linux ROCm)**: ใช้ `onnxruntime-rocm`
-* **AMD/Intel GPU (Windows)**: ใช้ `onnxruntime-directml`
-* **NVIDIA GPU**: ใช้ `onnxruntime-gpu`
-* **CPU ทั่วไป / Apple Silicon**: ใช้ `onnxruntime` (ค่าเริ่มต้น)
+เปิดไฟล์ [`backend/requirements.txt`](backend/requirements.txt) และเลือก ONNX Runtime package ที่ตรงกับฮาร์ดแวร์ (เปิดใช้แค่ตัวเดียว):
 
-### 2. วิธีตั้งค่าใน `docker-compose.yml`
-แก้ไขส่วนของบริการ `ai-worker` ในไฟล์ [docker-compose.yml](file:///Users/n.kittichaiwattanaku/Documents/face-rec/docker-compose.yml) เพื่อเชื่อมโยงชิปการ์ดจอและกำหนดค่าตัวแปร:
-* **การส่งผ่าน (Passthrough) การ์ดจอ Intel/AMD (สำหรับระบบ Linux)**:
-  ปลด comment ส่วนของ `devices` เพื่อส่งต่อไดรเวอร์ไดเร็กทอรีเข้าไปในคอนเทนเนอร์:
-  ```yaml
-  devices:
-    - /dev/dri:/dev/dri
-  ```
-* **บังคับเรียกใช้งาน Execution Provider ที่เฉพาะเจาะจง**:
-  ปลด comment ตัวแปรสภาพแวดล้อม `ONNX_PROVIDER` ใน `environment` เพื่อเลือกใช้ตัวประมวลผลกราฟิกที่ต้องการ:
-  ```yaml
+```txt
+# CPU / Apple Silicon (default)
+onnxruntime
+
+# NVIDIA GPU
+# onnxruntime-gpu
+
+# Intel CPU/GPU (OpenVINO)
+# onnxruntime-openvino
+
+# AMD GPU (Linux ROCm)
+# onnxruntime-rocm
+
+# Windows DirectML (AMD/Intel/NVIDIA)
+# onnxruntime-directml
+```
+
+จากนั้นแก้ไข `docker-compose.yml` ส่วน `ai-worker`:
+
+```yaml
+ai-worker:
   environment:
     - CONTROL_PLANE_URL=control-plane:50051
-    - ONNX_PROVIDER=OpenVINOExecutionProvider  # สำหรับ Intel GPU (ผ่าน OpenVINO)
-    # - ONNX_PROVIDER=ROCmExecutionProvider      # สำหรับ AMD GPU (ผ่าน Linux ROCm)
-  ```
+    - ONNX_PROVIDER=OpenVINOExecutionProvider   # Intel GPU
+    # - ONNX_PROVIDER=CUDAExecutionProvider     # NVIDIA GPU
+  # Passthrough GPU devices (Linux):
+  # devices:
+  #   - /dev/dri:/dev/dri
+```
 
 ---
 
-## 🪟 Windows Exe Compilation (สำหรับ Client Windows)
+## Windows / macOS — Native AI Worker
 
-ระบบรองรับการรัน AI Worker บน Windows ในรูปแบบแอปพลิเคชัน GUI ที่มีหน้าต่างกรอกการตั้งค่าและแสดงประวัติ Log สด:
+AI Worker รองรับการรันนอก Docker เพื่อใช้ GPU ของเครื่องโดยตรง
 
-### 1. วิธีรัน GUI ด้วย Python Script
-หากเครื่อง Windows มี Python 3.9+ ติดตั้งอยู่แล้ว สามารถรันสคริปต์ได้โดยตรง:
+### รัน Python โดยตรง
+
 ```bash
 cd backend
 pip install -r requirements.txt
-python ai_worker_gui.py
+python ai_worker_gui.py     # GUI mode (PyQt6)
+# หรือ
+python ai_worker_grpc.py    # CLI mode
 ```
 
-### 2. วิธีคอมไพล์เป็นไฟล์เดี่ยว `.exe` (Windows Binary)
-สามารถสร้างไฟล์ EXE ได้ง่ายๆ บนเครื่อง Windows:
-1. ดับเบิ้ลคลิกไฟล์ [build_win.bat](file:///Users/n.kittichaiwattanaku/Documents/face-rec/backend/build_win.bat) ในโฟลเดอร์ `backend`
-2. สคริปต์จะทำการติดตั้ง `pyinstaller` และไลบรารีทั้งหมดใน `requirements.txt` ให้โดยอัตโนมัติ
-3. จากนั้นระบบจะรวมโค้ดและไลบรารีออกมาเป็นไฟล์เดี่ยวที่โฟลเดอร์ `backend/dist/FaceRec_AI_Worker.exe`
+### Build ไฟล์ EXE (Windows)
 
-### 3. วิธีการใช้งาน GUI บน Windows
-เมื่อเปิดใช้งาน `FaceRec_AI_Worker.exe` จะมีหน้าต่างแอปพลิเคชันแสดงขึ้นมา:
-- **Control Plane URL**: ช่องระบุที่อยู่ของ Go Control Plane (เช่น `192.168.1.100:50051` หรือ `localhost:50051`)
-- **Execution Provider**: กล่องเลือกตัวเร่งความเร็วการ์ดจอ (เช่น เลือก `DmlExecutionProvider` สำหรับ AMD GPU / Intel Onboard บน Windows หรือ `CUDAExecutionProvider` สำหรับ NVIDIA GPU)
-- **Start/Stop Button**: กดปุ่ม **Start Worker** เพื่อเริ่มทำงาน และสามารถกด **Stop Worker** เพื่อหยุดชั่วคราวและแก้ไขการเชื่อมต่อได้สะดวก
-- **Log Window**: แสดงข้อมูลและสถานะการสตรีมประมวลผลแบบ Real-time ของกล้องทุกตัว
+```bat
+cd backend
+build_win.bat
+```
+ไฟล์ EXE จะอยู่ที่ `backend/dist/FaceRec_AI_Worker.exe`
 
+### Build ไฟล์ Binary (macOS)
+
+```bash
+cd backend
+./build_mac.sh
+```
+ไฟล์จะอยู่ที่ `backend/dist/FaceRec_AI_Worker_macOS_CPU`
+
+### GUI Usage
+
+เมื่อเปิด GUI จะมีช่องให้กรอก:
+- **Control Plane URL**: เช่น `192.168.1.100:50051`
+- **Execution Provider**: เลือก provider ที่ตรงกับ GPU ของเครื่อง
+- **Start/Stop Worker**: เริ่ม/หยุด Worker ได้ทันที
+- **Log Window**: แสดงสถานะ Real-time ของทุกกล้อง
+
+การตั้งค่าจะถูกบันทึกใน `worker_config.json` โดยอัตโนมัติ
+
+### Native Run Script
+
+```bash
+# macOS/Linux
+./run_native.sh
+
+# Windows
+run_native.bat
+```
+
+---
+
+## gRPC Protocol
+
+ดูไฟล์ [`facerec.proto`](facerec.proto) สำหรับ schema เต็ม
+
+```protobuf
+service FaceInferenceService {
+  rpc ProcessStream (stream InferenceResult) returns (stream FrameTask);
+}
+
+message FrameTask {
+  string task_id      = 1;  // "{camera_id}_{ts}_{uuid}" หรือ uuid สำหรับ registration
+  bytes  image_data   = 2;  // JPEG bytes (สูงสุด 20MB)
+  bool   is_registration = 3;
+}
+
+message InferenceResult {
+  string task_id         = 1;
+  repeated Detection detections = 2;
+  string error_message   = 3;
+  double process_time_ms = 4;  // ส่งทุก 2s เป็น metrics ("metrics" task_id)
+}
+
+message Detection {
+  repeated float bbox              = 1;  // [x1, y1, x2, y2]
+  repeated float embedding         = 2;  // 512-dim normalized ArcFace embedding
+  bytes          restored_face_jpeg = 3; // CodeFormer restored face (optional)
+}
+```
+
+---
+
+## Face Quality Pipeline (สรุป)
+
+```
+เฟรมจากกล้อง
+    ↓
+SCRFD Detection (buffalo_l)
+    ↓ filter: det_score ≥ 0.5, face ≥ 45px, frontality ≤ 20°
+ArcFace Embedding (512-dim, L2-normalized)
+    ↓
+Worker Face Tracking (Cosine Sim > 0.6 → same person)
+    ↓ quality score = face_area × frontality
+Best Frame Selection (sharp beats blurry → higher quality wins)
+    ↓ timeout 3s / max 5s
+Cooldown Check (Cosine > 0.6 → skip 30s)
+    ↓ sharpness ≥ 30
+[Optional] CodeFormer Face Restoration
+    ↓
+ส่ง InferenceResult → Control Plane
+    ↓
+Qdrant Vector Search (similarity ≥ 0.4 → match Person)
+    ↓
+PostgreSQL Log + S3 Snapshot/Crop + WebSocket Broadcast
+```
+
+---
+
+## API Reference (ย่อ)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/cameras` | รายการกล้องทั้งหมด |
+| POST | `/api/cameras` | เพิ่มกล้อง |
+| PUT | `/api/cameras/:id` | แก้ไขกล้อง |
+| DELETE | `/api/cameras/:id` | ลบกล้อง |
+| POST | `/api/cameras/:id/start` | เริ่ม stream |
+| POST | `/api/cameras/:id/stop` | หยุด stream |
+| GET | `/api/persons` | รายการบุคคลที่ลงทะเบียน |
+| POST | `/api/persons` | เพิ่มบุคคลพร้อมรูปใบหน้า |
+| PUT | `/api/persons/:id` | แก้ไขข้อมูล/รูปใบหน้า |
+| DELETE | `/api/persons/:id` | ลบบุคคล |
+| GET | `/api/detections` | ประวัติการตรวจจับ (paginated) |
+| GET | `/api/workers` | รายการ AI Worker ที่เชื่อมต่ออยู่ |
+| POST | `/api/workers/:id/pause` | Pause/Resume Worker |
+| WS | `/ws` | WebSocket real-time detection events |
+| GET | `/api/static/snapshots/:file` | Proxy รูปจาก S3 |
+| GET | `/api/static/faces/:file` | Proxy รูปใบหน้าจาก S3 |

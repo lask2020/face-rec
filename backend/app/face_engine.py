@@ -461,12 +461,15 @@ class FaceEngine:
         face = faces[0]
 
         # 2. Frontality Gate: Check yaw, pitch, roll (strict 15.0 degrees for registration)
+        # pose model is not loaded (removed for AMD GPU/Windows compatibility), so we
+        # always fall back to landmark-based estimation via _estimate_pose_from_kps.
         pose = face.get("pose")
-        if pose is not None:
-            pitch, yaw, roll = pose
-            max_angle = 15.0
-            if abs(pitch) > max_angle or abs(yaw) > max_angle or abs(roll) > max_angle:
-                return None, f"Face is not looking straight (yaw: {abs(yaw):.1f}°, pitch: {abs(pitch):.1f}°, roll: {abs(roll):.1f}°). Maximum allowed is {max_angle}°."
+        if pose is None:
+            pose = _estimate_pose_from_kps(getattr(face, 'kps', None))
+        pitch, yaw, roll = pose
+        max_angle = 15.0
+        if abs(pitch) > max_angle or abs(yaw) > max_angle or abs(roll) > max_angle:
+            return None, f"Face is not looking straight (yaw: {abs(yaw):.1f}°, pitch: {abs(pitch):.1f}°, roll: {abs(roll):.1f}°). Maximum allowed is {max_angle}°."
 
         # 3. Sharpness Gate: Check Laplacian variance (strict 60.0 threshold for registration)
         bbox_list = face.bbox.tolist()

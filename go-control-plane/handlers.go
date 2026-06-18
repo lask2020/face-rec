@@ -74,7 +74,12 @@ func StartCameraStream(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "Camera not found"})
 	}
 
-	if err := PublishAssignment(uint(id), camera.URL, camera.FPSProcess); err != nil {
+	fps := camera.FPSProcess
+	if fps <= 0 {
+		fps = 2 // default fallback to prevent division by zero in the ingestion worker
+	}
+
+	if err := PublishAssignment(uint(id), camera.URL, fps); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to publish start command"})
 	}
 
@@ -192,10 +197,12 @@ func DeletePerson(c *fiber.Ctx) error {
 		}
 	}
 
-	// 3. Delete from Qdrant directly
+	// 3. Delete from Qdrant — must succeed before removing DB records, otherwise
+	// embeddings become orphaned and the person keeps triggering detections.
 	err = DeletePersonEmbeddings(c.Context(), uint(personID))
 	if err != nil {
 		log.Printf("[Person %d] Failed to delete embeddings from Qdrant: %v", personID, err)
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to delete face embeddings from vector database"})
 	}
 
 	// 4. Delete person and cascade faces in database
@@ -255,7 +262,7 @@ func UploadFace(c *fiber.Ctx) error {
 			})
 			if err != nil {
 				log.Printf("[Person %d] Failed to upload face image to S3: %v", personID, err)
-				continue
+				return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Failed to store face image: %v", err)})
 			}
 		}
 

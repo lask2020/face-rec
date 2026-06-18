@@ -398,12 +398,20 @@ func SendRegistrationTask(ctx context.Context, imgBytes []byte) ([]float32, erro
 }
 
 func handleInferenceResult(result *facerec.InferenceResult) {
+	// Skip logging metrics completely
+	if result.TaskId == "metrics" {
+		return
+	}
+
+	log.Printf("[gRPC Debug] Received InferenceResult for TaskId=%s with %d detections", result.TaskId, len(result.Detections))
+
 	// 1. Check if it's a registration task
 	regChannelsMu.Lock()
 	ch, isReg := regChannels[result.TaskId]
 	regChannelsMu.Unlock()
 
 	if isReg {
+		log.Printf("[gRPC Debug] TaskId=%s is a Registration task", result.TaskId)
 		if result.ErrorMessage != "" {
 			ch <- RegistrationResult{
 				Embedding:    nil,
@@ -432,6 +440,7 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 	pendingTasksMu.Unlock()
 
 	if !exists {
+		log.Printf("[gRPC Debug] TaskId=%s NOT FOUND in pendingTasks (timed out or invalid)", result.TaskId)
 		// Task already timed out or processed
 		return
 	}
@@ -440,8 +449,11 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 
 	// If no faces detected, we skip logging and S3 uploads
 	if len(result.Detections) == 0 {
+		log.Printf("[gRPC Debug] TaskId=%s has 0 detections, skipping", result.TaskId)
 		return
 	}
+	
+	log.Printf("[gRPC Debug] TaskId=%s matched to Camera %d, proceeding to process", result.TaskId, task.CameraID)
 
 	// Process detections
 	type UIResultDetection struct {
@@ -671,13 +683,13 @@ func StartFrameDispatcher(ctx context.Context) {
 				}
 				pendingTasksMu.Unlock()
 
-				// Clean up pending task after timeout (30 seconds)
-				go func(tid string) {
-					time.Sleep(30 * time.Second)
+				// Clean up pending task after timeout using a timer (avoids spawning
+				// a goroutine per frame, which would accumulate thousands of sleeping goroutines).
+				time.AfterFunc(30*time.Second, func() {
 					pendingTasksMu.Lock()
-					delete(pendingTasks, tid)
+					delete(pendingTasks, taskID)
 					pendingTasksMu.Unlock()
-				}(taskID)
+				})
 
 				// Send task over stream
 				err = worker.stream.Send(&facerec.FrameTask{

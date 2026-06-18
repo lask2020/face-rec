@@ -362,10 +362,22 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                 return
             time.sleep(0.2)
 
+    flusher_stop = None  # Tracks the current flusher's stop event for cleanup on reconnect
+
     while True:
         if stop_event and stop_event.is_set():
             logger.info("Stop event detected in main loop. Exiting client.")
             break
+
+        # Stop the previous flusher before starting a new connection, so threads
+        # don't accumulate across reconnects. Also clear stale per-connection state.
+        if flusher_stop is not None:
+            flusher_stop.set()
+
+        with tracks_lock:
+            active_tracks.clear()
+        with cameras_lock:
+            last_seen_camera.clear()
 
         logger.info(f"Connecting to gRPC server at {control_plane_url}...")
         try:
@@ -374,17 +386,21 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                 ('grpc.max_receive_message_length', 20 * 1024 * 1024),
                 ('grpc.max_send_message_length', 20 * 1024 * 1024),
             ]
-            
+
             with grpc.insecure_channel(control_plane_url, options=options) as channel:
                 stub = facerec_pb2_grpc.FaceInferenceServiceStub(channel)
-                
+
                 # Thread-safe queue for sending inference results back to server
                 send_queue = queue.Queue()
-                
+
+                # Per-connection stop event so we can cleanly stop this flusher on
+                # the next reconnect without touching the caller's stop_event.
+                flusher_stop = threading.Event()
+
                 # Start track flusher thread
-                flusher_thread = threading.Thread(target=track_flusher, args=(send_queue, stop_event), daemon=True)
+                flusher_thread = threading.Thread(target=track_flusher, args=(send_queue, flusher_stop), daemon=True)
                 flusher_thread.start()
-                
+
                 def request_generator():
                     while True:
                         if stop_event and stop_event.is_set():
@@ -394,6 +410,8 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                             item = send_queue.get(timeout=0.5)
                             if item is None:
                                 break
+                            if getattr(item, 'task_id', '') != 'metrics':
+                                logger.debug(f"Yielding task {item.task_id} to gRPC stream (detections: {len(item.detections)})")
                             yield item
                         except queue.Empty:
                             continue
@@ -401,10 +419,10 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                 # Start the bidirectional stream
                 responses = stub.ProcessStream(request_generator())
                 logger.info("gRPC stream established. Listening for tasks...")
-                
+
                 max_workers = int(os.getenv("AI_WORKER_CONCURRENCY", "4"))
                 logger.info(f"Starting ThreadPoolExecutor with {max_workers} workers for bulk processing.")
-                
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                     for task in responses:
                         if stop_event and stop_event.is_set():
@@ -413,12 +431,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                         task_id = task.task_id
                         image_data = task.image_data
                         is_reg = task.is_registration
-                        
+
                         logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}")
-                        
+
                         # Submit task to thread pool
                         executor.submit(process_task, task_id, image_data, is_reg, send_queue)
-                        
+
         except grpc.RpcError as e:
             logger.error(f"gRPC stream connection error: {e.details() if hasattr(e, 'details') else e}. Retrying in 5 seconds...")
             sleep_interruptible(5)
