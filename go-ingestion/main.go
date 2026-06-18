@@ -88,9 +88,9 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	ictx, cancel := context.WithCancel(ctx)
 	activeCameras[camID] = cancel
 
-	// Register stream in go2rtc first (configured with ffmpeg video=copy to stabilize Hikvision streams)
+	// Register stream in go2rtc first (using explicit exec:ffmpeg to avoid shorthand parsing bugs with special characters in URLs)
 	streamName := fmt.Sprintf("cam_%d", camID)
-	streamSource := fmt.Sprintf("ffmpeg:%s#video=copy", rtspURL)
+	streamSource := fmt.Sprintf(`exec:ffmpeg -hide_banner -v error -rtsp_transport tcp -i "%s" -c:v copy -an -f rtsp {output}`, rtspURL)
 	if err := registerStream(streamName, streamSource); err != nil {
 		log.Printf("[Camera %d] Failed to register in go2rtc: %v. Will retry on capture.", camID, err)
 	} else {
