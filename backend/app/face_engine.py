@@ -37,6 +37,8 @@ def compute_sharpness(image: np.ndarray, bbox: list) -> float:
     Returns:
         Laplacian variance (float).  Higher = sharper.
     """
+    if image is None:
+        return 0.0
     h, w = image.shape[:2]
     x1 = max(0, int(bbox[0]))
     y1 = max(0, int(bbox[1]))
@@ -191,6 +193,30 @@ class FaceEngine:
             # to 320x320 causes a shape mismatch crash (Bus error 10) on macOS.
             det_size_val = int(os.getenv("FACE_DETECTION_SIZE", "640"))
             self.model.prepare(ctx_id=0, det_size=(det_size_val, det_size_val))
+            
+            # FIX: Reorder SCRFD detection model outputs for DirectML compatibility.
+            # DirectML (and potentially other providers) may return output tensors in a
+            # different order than CPUExecutionProvider. InsightFace's RetinaFace.forward()
+            # accesses outputs by index assuming: [scores..., bboxes..., kps...] grouped
+            # by stride. We fix this by sorting output_names based on output shapes:
+            #   - last_dim == 1  → score tensors
+            #   - last_dim == 4  → bbox tensors
+            #   - last_dim == 10 → keypoint tensors
+            # Within each group, sort by spatial dimension descending (larger = smaller stride).
+            self._fix_det_output_order()
+            
+            # Safety fallback: patch recognition model to not crash if kps is still missing
+            # (e.g., if a face is detected but kps extraction fails for other reasons)
+            if self.model and 'recognition' in self.model.models:
+                orig_get = self.model.models['recognition'].get
+                def safe_get(img, face):
+                    if getattr(face, 'kps', None) is None:
+                        face.embedding = None
+                        face.normed_embedding = None
+                        return None
+                    return orig_get(img, face)
+                self.model.models['recognition'].get = safe_get
+                
             logger.info(f"InsightFace model 'buffalo_l' loaded successfully with det_size={det_size_val}x{det_size_val}")
         except Exception as e:
             logger.warning(f"Failed to load InsightFace model: {e}")
@@ -198,6 +224,74 @@ class FaceEngine:
             self.model = None
 
         self._initialized = True
+
+    def _fix_det_output_order(self):
+        """
+        Fix SCRFD detection model output ordering for non-CPU providers.
+
+        DirectML (and potentially other providers) may return output tensors in a
+        different order than CPUExecutionProvider. InsightFace's RetinaFace.forward()
+        accesses outputs by index, assuming the order:
+            [score_s8, score_s16, score_s32, bbox_s8, bbox_s16, bbox_s32, kps_s8, kps_s16, kps_s32]
+
+        We fix this by inspecting output shapes:
+            - last_dim == 1  → score tensors
+            - last_dim == 4  → bbox tensors
+            - last_dim == 10 → keypoint tensors
+        Within each group, sort by first spatial dimension descending (larger = smaller stride = first).
+        """
+        det_model = self.model.models.get('detection') if self.model else None
+        if det_model is None:
+            return
+
+        if not (hasattr(det_model, 'use_kps') and det_model.use_kps):
+            return  # No keypoints to fix
+
+        outputs = det_model.session.get_outputs()
+        fmc = getattr(det_model, 'fmc', 3)
+
+        if len(outputs) != fmc * 3:
+            return  # Not the expected SCRFD-with-kps layout
+
+        # Categorize outputs by their last dimension
+        DIM_TO_GROUP = {1: 'score', 4: 'bbox', 10: 'kps'}
+        groups = {'score': [], 'bbox': [], 'kps': []}
+
+        for o in outputs:
+            last_dim = o.shape[-1]
+            if not isinstance(last_dim, int):
+                logger.debug("Cannot fix output order: dynamic last dimension, skipping")
+                return
+            group = DIM_TO_GROUP.get(last_dim)
+            if group is None:
+                logger.debug(f"Cannot fix output order: unexpected last dim {last_dim} for output {o.name}")
+                return
+            groups[group].append(o)
+
+        for group_name, group_list in groups.items():
+            if len(group_list) != fmc:
+                logger.debug(f"Cannot fix output order: expected {fmc} {group_name} outputs, got {len(group_list)}")
+                return
+
+        # Sort each group by spatial dimension (dim[0] or dim[1]) descending
+        # Larger spatial dim → smaller stride → should come first in the index order
+        def spatial_sort_key(o):
+            # Use the first non-batch dimension that is an integer
+            for d in o.shape[:-1]:
+                if isinstance(d, int):
+                    return -d
+            return 0
+
+        for group_list in groups.values():
+            group_list.sort(key=spatial_sort_key)
+
+        correct_names = [o.name for o in (groups['score'] + groups['bbox'] + groups['kps'])]
+        if correct_names != det_model.output_names:
+            logger.info(f"Fixed SCRFD output order for provider compatibility: {det_model.output_names} → {correct_names}")
+            det_model.output_names = correct_names
+        else:
+            logger.debug("SCRFD detection output order is already correct")
+
 
     def detect_faces(self, frame: np.ndarray) -> list[FaceResult]:
         """
@@ -209,7 +303,7 @@ class FaceEngine:
         Returns:
             List of FaceResult with bounding box, embedding, and detection score
         """
-        if self.model is None:
+        if self.model is None or frame is None:
             return []
 
         try:
@@ -236,9 +330,14 @@ class FaceEngine:
                 embedding = face.normed_embedding
                 if embedding is None:
                     embedding = face.embedding
-                    norm = np.linalg.norm(embedding)
-                    if norm > 0:
-                        embedding = embedding / norm
+                    if embedding is not None:
+                        norm = np.linalg.norm(embedding)
+                        if norm > 0:
+                            embedding = embedding / norm
+
+                if embedding is None:
+                    logger.debug("Skipped face: no embedding could be extracted (missing landmarks)")
+                    continue
 
                 # Compute sharpness score for best-frame selection
                 bbox_list = face.bbox.tolist()
@@ -306,9 +405,13 @@ class FaceEngine:
         embedding = face.normed_embedding
         if embedding is None:
             embedding = face.embedding
-            norm = np.linalg.norm(embedding)
-            if norm > 0:
-                embedding = embedding / norm
+            if embedding is not None:
+                norm = np.linalg.norm(embedding)
+                if norm > 0:
+                    embedding = embedding / norm
+
+        if embedding is None:
+            return None, "Failed to extract face embedding (landmarks missing). Try a different photo."
 
         return embedding.astype(np.float32), None
 
