@@ -22,8 +22,12 @@ from app.gpu_lock import inference_lock
 
 logger = logging.getLogger(__name__)
 
-_MODEL_URL = "https://huggingface.co/onnx-community/RealESRGAN_x4plus/resolve/main/model.onnx"
-_MODEL_FILENAME = "realesrgan_x4plus.onnx"
+# Set ESRGAN_MODEL_URL env var to use a custom download URL.
+_MODEL_URL = os.getenv(
+    "ESRGAN_MODEL_URL",
+    "https://huggingface.co/onnx-community/RealESRGAN_x4plus/resolve/main/model.onnx",
+)
+_MODEL_FILENAME = "Real-ESRGAN-x4plus.onnx"
 
 # Maximum tile dimension to avoid GPU OOM on large faces.
 DEFAULT_TILE_SIZE = int(os.getenv("ESRGAN_TILE_SIZE", "256"))
@@ -53,29 +57,62 @@ def _default_model_dir() -> str:
 
 
 def _download_model(dest_path: str) -> bool:
-    """Download Real-ESRGAN ONNX with a progress indicator. Returns True on success."""
-    logger.info(f"Downloading Real-ESRGAN model (~67MB) from HuggingFace → {dest_path}")
+    """
+    Download Real-ESRGAN ONNX with progress logging.
+
+    HuggingFace CDN requires a proper User-Agent — urllib's default gets 401.
+    Optional: set HF_TOKEN env var for gated/private models.
+    Optional: set ESRGAN_MODEL_URL env var to override the download URL.
+    """
+    url = _MODEL_URL
+    logger.info(f"Downloading Real-ESRGAN model from {url}")
+    logger.info(f"  → saving to {dest_path}")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; face-rec/1.0; +https://github.com/)",
+    }
+    hf_token = os.getenv("HF_TOKEN")
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+        logger.info("  Using HF_TOKEN for authentication.")
+
     tmp_path = dest_path + ".tmp"
     try:
-        last_logged_pct = [-1]  # mutable cell to track last logged %
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as response:
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            last_logged_pct = -1
+            chunk_size = 65536  # 64KB
 
-        def _progress(block_num, block_size, total_size):
-            if total_size > 0:
-                pct = min(block_num * block_size * 100 // total_size, 100)
-                milestone = (pct // 10) * 10
-                if milestone > last_logged_pct[0]:
-                    last_logged_pct[0] = milestone
-                    logger.info(f"  Downloading Real-ESRGAN... {milestone}%")
+            with open(tmp_path, "wb") as f:
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        pct = downloaded * 100 // total_size
+                        milestone = (pct // 10) * 10
+                        if milestone > last_logged_pct:
+                            last_logged_pct = milestone
+                            logger.info(f"  Downloading Real-ESRGAN... {milestone}%")
 
-        urllib.request.urlretrieve(_MODEL_URL, tmp_path, reporthook=_progress)
         shutil.move(tmp_path, dest_path)
-        logger.info(f"Real-ESRGAN model saved to {dest_path}")
+        logger.info("Real-ESRGAN model downloaded successfully.")
         return True
+    except urllib.error.HTTPError as e:
+        logger.error(
+            f"HTTP {e.code} downloading Real-ESRGAN model from {url}\n"
+            f"  If 401: set HF_TOKEN env var, or set ESRGAN_MODEL_URL to a direct download link.\n"
+            f"  You can also download manually and place the file at: {dest_path}"
+        )
     except Exception as e:
         logger.error(f"Failed to download Real-ESRGAN model: {e}")
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        return False
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    return False
 
 
 def _find_or_download_model() -> Optional[str]:
