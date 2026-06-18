@@ -56,33 +56,61 @@ def compute_sharpness(image: np.ndarray, bbox: list) -> float:
     return float(laplacian.var())
 
 
+def _estimate_pose_from_kps(kps) -> tuple[float, float, float]:
+    """
+    Estimate rough pitch, yaw, roll from 5 facial landmarks (kps).
+    kps: numpy array of shape (5, 2)
+        0: left eye
+        1: right eye
+        2: nose
+        3: left mouth corner
+        4: right mouth corner
+    Returns: (pitch, yaw, roll) in degrees
+    """
+    if kps is None or len(kps) < 5:
+        return 0.0, 0.0, 0.0
+
+    # Extract points
+    leye = kps[0]
+    reye = kps[1]
+    nose = kps[2]
+    lmouth = kps[3]
+    rmouth = kps[4]
+
+    # Yaw: horizontal ratio of nose to eyes
+    eye_center_x = (leye[0] + reye[0]) / 2.0
+    eye_dist = max(1.0, reye[0] - leye[0])
+    yaw_ratio = (nose[0] - eye_center_x) / eye_dist
+    yaw = yaw_ratio * 90.0  # approximate scaling to degrees
+
+    # Pitch: vertical ratio of nose to eye-mouth distance
+    mouth_center_y = (lmouth[1] + rmouth[1]) / 2.0
+    eye_center_y = (leye[1] + reye[1]) / 2.0
+    face_height = max(1.0, mouth_center_y - eye_center_y)
+    nose_ratio = (nose[1] - eye_center_y) / face_height
+    # nose is typically ~45% down from eyes to mouth.
+    pitch = (nose_ratio - 0.45) * 100.0  # approximate scaling
+
+    # Roll: angle between eyes
+    dy = reye[1] - leye[1]
+    dx = reye[0] - leye[0]
+    roll = np.degrees(np.arctan2(dy, dx))
+
+    return pitch, yaw, roll
+
+
 def compute_frontality(face, max_yaw: float = 20.0, max_pitch: float = 20.0, max_roll: float = 20.0) -> float:
     """
-    Compute a 0.0–1.0 frontality score from InsightFace pose angles.
-
-    1.0 = perfectly frontal (yaw ≈ pitch ≈ roll ≈ 0).
-    0.0 = face at the maximum allowed angle threshold.
-
-    The score is the average of per-axis ratios:
-        axis_score = 1.0 - clamp(|angle| / max_angle, 0, 1)
-
-    Args:
-        face: InsightFace detection object with .pose attribute.
-        max_yaw:   Maximum yaw   considered frontal (degrees).
-        max_pitch:  Maximum pitch considered frontal (degrees).
-        max_roll:   Maximum roll  considered frontal (degrees).
-
-    Returns:
-        Frontality score (float, 0.0–1.0).  Higher = more frontal.
+    Compute a score from 0 to 1 indicating how frontal a face is.
     """
     pose = face.get("pose")
     if pose is None:
-        return 1.0  # Assume frontal if pose estimation unavailable
+        pose = _estimate_pose_from_kps(getattr(face, 'kps', None))
 
     pitch, yaw, roll = pose
-    yaw_score = 1.0 - min(abs(yaw) / max_yaw, 1.0)
-    pitch_score = 1.0 - min(abs(pitch) / max_pitch, 1.0)
-    roll_score = 1.0 - min(abs(roll) / max_roll, 1.0)
+    yaw_score = max(0.0, 1.0 - abs(yaw) / max_yaw)
+    pitch_score = max(0.0, 1.0 - abs(pitch) / max_pitch)
+    roll_score = max(0.0, 1.0 - abs(roll) / max_roll)
     return (yaw_score + pitch_score + roll_score) / 3.0
 
 
@@ -101,11 +129,10 @@ class FaceResult:
 def is_frontal_face(face, max_yaw: float = 20.0, max_pitch: float = 20.0, max_roll: float = 20.0) -> bool:
     """
     Check if the face is looking straight (frontal face) based on pose angles.
-    InsightFace returns pose as [pitch, yaw, roll] in degrees.
     """
     pose = face.get("pose")
     if pose is None:
-        return True  # Fallback if pose estimation is not available
+        pose = _estimate_pose_from_kps(getattr(face, 'kps', None))
     
     pitch, yaw, roll = pose
     return abs(pitch) <= max_pitch and abs(yaw) <= max_yaw and abs(roll) <= max_roll
@@ -189,6 +216,7 @@ class FaceEngine:
                 name="buffalo_l",
                 root=data_root,
                 providers=providers,
+                allowed_modules=['detection', 'recognition']
             )
             
             # NOTE: We MUST use 640x640 for CoreMLExecutionProvider. 
