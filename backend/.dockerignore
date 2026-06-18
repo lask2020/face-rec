@@ -1,0 +1,29 @@
+# ── Build artifacts ──────────────────────────────────────────────────────────
+build/
+dist/
+*.spec
+
+# ── Python artifacts ─────────────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+venv*/
+env/
+.venv/
+
+# ── Model files (downloaded at runtime via /app/data volume) ─────────────────
+data/
+models/
+
+# ── Test files ───────────────────────────────────────────────────────────────
+test_*.py
+
+# ── macOS / IDE ──────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/

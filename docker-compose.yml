@@ -82,6 +82,11 @@ services:
   #     # - ONNX_PROVIDER=OpenVINOExecutionProvider   # For Intel GPU/CPU via OpenVINO
   #     # - ONNX_PROVIDER=ROCmExecutionProvider       # For AMD GPU via ROCm (Linux)
   #     # - ONNX_PROVIDER=CUDAExecutionProvider       # For NVIDIA GPU via CUDA
+  #     # - ONNX_PROVIDER=DmlExecutionProvider        # For AMD/Intel GPU via Windows DirectML
+  #   volumes:
+  #     # Persist downloaded ONNX models (CodeFormer + Real-ESRGAN) across rebuilds.
+  #     # Models auto-download on first start — no need to bake them into the image.
+  #     - face_models:/app/data
   #   # Passthrough Intel/AMD onboard GPU devices (Linux only):
   #   # devices:
   #   #   - /dev/dri:/dev/dri
@@ -130,3 +135,4 @@ volumes:
   pgdata:
   qdrant_data:
   rustfs_data:
+  face_models:  # Shared ONNX model storage for ai-worker nodes

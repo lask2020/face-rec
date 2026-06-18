@@ -196,7 +196,7 @@ def flush_track(track, send_queue):
                             pipeline.append("CodeFormer")
                         logger.info(f"Restored face for track {track.track_id} via {' → '.join(pipeline)}")
         except Exception as e:
-            logger.error(f"Error during face restoration in flusher: {e}")
+            logger.error(f"Error during face restoration in flusher: {e}", exc_info=True)
 
     result = facerec_pb2.InferenceResult(
         task_id=track.task_id,
