@@ -159,9 +159,9 @@ def flush_track(track, send_queue):
                 # to avoid hallucinated/distorted output.
                 if getattr(track, 'kps', None) is not None:
                     from insightface.utils import face_align
-                    # norm_crop produces a 512x512 aligned face by default;
-                    # use 128 here so ESRGAN has room to 4x upscale before CodeFormer
-                    face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=128)
+                    # Use 64px so ESRGAN (skip threshold=80) always runs and upscales to 256px,
+                    # which then clears CodeFormer's 128px min-size gate.
+                    face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=64)
                 else:
                     # No landmarks → bbox square crop (unaligned).
                     # ESRGAN can still denoise/upscale but CodeFormer will be skipped
@@ -375,10 +375,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
         logger.warning("Face Super Resolver disabled (model not found or load failed).")
 
     # Initialize CodeFormer Face Restorer
+    logger.info("Initializing Face Restorer (CodeFormer)...")
+    face_restorer.initialize()
     if face_restorer.is_enabled():
-        logger.info("Initializing Face Restorer (CodeFormer)...")
-        face_restorer.initialize()
         logger.info("Face Restorer initialized successfully.")
+    else:
+        logger.warning("Face Restorer disabled (model not found or load failed).")
 
     def sleep_interruptible(seconds):
         steps = int(seconds / 0.2)

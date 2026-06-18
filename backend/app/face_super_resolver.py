@@ -18,6 +18,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import onnxruntime as ort
+from app.gpu_lock import inference_lock
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +57,15 @@ def _download_model(dest_path: str) -> bool:
     logger.info(f"Downloading Real-ESRGAN model (~67MB) from HuggingFace → {dest_path}")
     tmp_path = dest_path + ".tmp"
     try:
+        last_logged_pct = [-1]  # mutable cell to track last logged %
+
         def _progress(block_num, block_size, total_size):
             if total_size > 0:
-                downloaded = block_num * block_size
-                pct = min(downloaded * 100 // total_size, 100)
-                if pct % 10 == 0:
-                    logger.info(f"  Downloading Real-ESRGAN... {pct}%")
+                pct = min(block_num * block_size * 100 // total_size, 100)
+                milestone = (pct // 10) * 10
+                if milestone > last_logged_pct[0]:
+                    last_logged_pct[0] = milestone
+                    logger.info(f"  Downloading Real-ESRGAN... {milestone}%")
 
         urllib.request.urlretrieve(_MODEL_URL, tmp_path, reporthook=_progress)
         shutil.move(tmp_path, dest_path)
@@ -222,8 +226,6 @@ class FaceSuperResolver:
 
         tiles_x = math.ceil(w / tile_size)
         tiles_y = math.ceil(h / tile_size)
-
-        from app.gpu_lock import inference_lock
 
         for iy in range(tiles_y):
             for ix in range(tiles_x):
