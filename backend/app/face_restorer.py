@@ -22,11 +22,18 @@ class FaceRestorer:
     def __init__(self):
         self.session = None
         self.enabled = os.getenv("CODEFORMER_ENABLED", "true").lower() == "true"
-        # Fidelity weight: double (float64) in the range 0.0 - 1.0
+        # Fidelity weight: 0.0 = max restoration (may hallucinate), 1.0 = preserve original
+        # Default raised to 0.9 for CCTV: less hallucination, more natural result
         try:
-            self.fidelity = float(os.getenv("CODEFORMER_FIDELITY", "0.7"))
+            self.fidelity = float(os.getenv("CODEFORMER_FIDELITY", "0.9"))
         except ValueError:
-            self.fidelity = 0.7
+            self.fidelity = 0.9
+        # Minimum face dimension (pixels) required before running CodeFormer.
+        # After Real-ESRGAN x4, a 64px face becomes 256px — well above this gate.
+        try:
+            self.min_face_size = int(os.getenv("CODEFORMER_MIN_FACE_SIZE", "128"))
+        except ValueError:
+            self.min_face_size = 128
             
         self._initialized = False
 
@@ -118,6 +125,14 @@ class FaceRestorer:
 
         if face_crop_bgr is None or face_crop_bgr.size == 0:
             logger.warning("Empty face crop passed to FaceRestorer")
+            return None
+
+        h, w = face_crop_bgr.shape[:2]
+        if h < self.min_face_size or w < self.min_face_size:
+            logger.debug(
+                f"Face {w}x{h} is below min size ({self.min_face_size}px) for CodeFormer — "
+                "run Real-ESRGAN first to upscale"
+            )
             return None
 
         try:

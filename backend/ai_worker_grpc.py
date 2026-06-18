@@ -22,6 +22,7 @@ import facerec_pb2
 import facerec_pb2_grpc
 from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 from app.face_restorer import face_restorer
+from app.face_super_resolver import face_super_resolver
 
 # Set up logging
 logging.basicConfig(
@@ -148,36 +149,52 @@ def flush_track(track, send_queue):
     add_cooldown(track.embedding)
     
     restored_face_bytes = b""
-    if face_restorer.is_enabled():
+    if face_restorer.is_enabled() or face_super_resolver.is_enabled():
         try:
             nparr = np.frombuffer(track.image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is not None:
+                # Prefer landmark-aligned crop; fall back to bbox crop only when kps unavailable.
+                # CodeFormer requires aligned faces — skip restoration entirely without alignment
+                # to avoid hallucinated/distorted output.
                 if getattr(track, 'kps', None) is not None:
                     from insightface.utils import face_align
-                    face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=512)
+                    # norm_crop produces a 512x512 aligned face by default;
+                    # use 128 here so ESRGAN has room to 4x upscale before CodeFormer
+                    face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=128)
                 else:
-                    h, w = img.shape[:2]
+                    # No landmarks → bbox square crop (unaligned).
+                    # ESRGAN can still denoise/upscale but CodeFormer will be skipped
+                    # (its min_face_size gate won't be reached without proper alignment
+                    # producing clean input).
+                    h_img, w_img = img.shape[:2]
                     cx = int((track.bbox[0] + track.bbox[2]) / 2)
                     cy = int((track.bbox[1] + track.bbox[3]) / 2)
-                    bw = int(track.bbox[2] - track.bbox[0])
-                    bh = int(track.bbox[3] - track.bbox[1])
-                    side = max(bw, bh)
-                    padding = int(side * 0.5)
-
-                    x1 = max(0, cx - padding)
-                    y1 = max(0, cy - padding)
-                    x2 = min(w, cx + padding)
-                    y2 = min(h, cy + padding)
+                    side = max(int(track.bbox[2] - track.bbox[0]), int(track.bbox[3] - track.bbox[1]))
+                    padding = int(side * 0.3)
+                    x1 = max(0, cx - side // 2 - padding)
+                    y1 = max(0, cy - side // 2 - padding)
+                    x2 = min(w_img, cx + side // 2 + padding)
+                    y2 = min(h_img, cy + side // 2 + padding)
                     face_crop = img[y1:y2, x1:x2]
 
                 if face_crop is not None and face_crop.size > 0:
-                    restored = face_restorer.restore_face(face_crop)
-                    if restored is not None:
-                        success, encoded_img = cv2.imencode(".jpg", restored)
-                        if success:
-                            restored_face_bytes = encoded_img.tobytes()
-                            logger.info(f"Successfully restored face for track {track.track_id}")
+                    # Step 1: Real-ESRGAN — upscale + denoise (no-op if face already large)
+                    enhanced_crop = face_super_resolver.upscale(face_crop)
+
+                    # Step 2: CodeFormer — face-specific restoration on the upscaled crop
+                    restored = face_restorer.restore_face(enhanced_crop)
+                    final_img = restored if restored is not None else enhanced_crop
+
+                    success, encoded_img = cv2.imencode(".jpg", final_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                    if success:
+                        restored_face_bytes = encoded_img.tobytes()
+                        pipeline = []
+                        if face_super_resolver.is_enabled():
+                            pipeline.append("ESRGAN")
+                        if restored is not None:
+                            pipeline.append("CodeFormer")
+                        logger.info(f"Restored face for track {track.track_id} via {' → '.join(pipeline)}")
         except Exception as e:
             logger.error(f"Error during face restoration in flusher: {e}")
 
@@ -349,9 +366,17 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
     face_engine.initialize()
     logger.info("Face Engine initialized successfully.")
     
+    # Initialize Real-ESRGAN Super Resolver (runs before CodeFormer)
+    logger.info("Initializing Face Super Resolver (Real-ESRGAN)...")
+    face_super_resolver.initialize()
+    if face_super_resolver.is_enabled():
+        logger.info("Face Super Resolver initialized successfully.")
+    else:
+        logger.warning("Face Super Resolver disabled (model not found or load failed).")
+
     # Initialize CodeFormer Face Restorer
     if face_restorer.is_enabled():
-        logger.info("Initializing Face Restorer...")
+        logger.info("Initializing Face Restorer (CodeFormer)...")
         face_restorer.initialize()
         logger.info("Face Restorer initialized successfully.")
 
