@@ -141,8 +141,10 @@ class FaceRestorer:
             w_val = np.array(self.fidelity, dtype=np.float64)
             inputs = {'x': img, 'w': w_val}
 
-            # 6. Run inference
-            outputs = self.session.run(['y'], inputs)
+            # 6. Run inference (synchronized to prevent DirectML crashes)
+            from app.gpu_lock import inference_lock
+            with inference_lock:
+                outputs = self.session.run(['y'], inputs)
             restored_tensor = outputs[0]
 
             # 7. Postprocessing: Remove batch dimension, transpose to [H, W, C]

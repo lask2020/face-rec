@@ -124,7 +124,8 @@ class FaceEngine:
         self.model = None
         self.embedding_dim = 512
         self._initialized = False
-        self._inference_lock = threading.Lock()
+        from app.gpu_lock import inference_lock
+        self._inference_lock = inference_lock
 
     def initialize(self):
         """Load the InsightFace model."""
