@@ -88,9 +88,9 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	ictx, cancel := context.WithCancel(ctx)
 	activeCameras[camID] = cancel
 
-	// Register stream in go2rtc first (using ffmpeg:"URL"#video=copy to safely quote the URL and avoid insecure exec module block)
+	// Register stream in go2rtc first (using direct RTSP URL without ffmpeg wrapper)
 	streamName := fmt.Sprintf("cam_%d", camID)
-	streamSource := fmt.Sprintf(`ffmpeg:"%s"#video=copy`, rtspURL)
+	streamSource := rtspURL
 	if err := registerStream(streamName, streamSource); err != nil {
 		log.Printf("[Camera %d] Failed to register in go2rtc: %v. Will retry on capture.", camID, err)
 	} else {
