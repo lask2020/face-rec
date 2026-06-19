@@ -24,6 +24,33 @@ from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 from app.face_restorer import face_restorer
 from app.face_super_resolver import face_super_resolver
 
+# FFHQ 5-point landmark template for 512×512.
+# CodeFormer (and GFPGAN) were trained exclusively on FFHQ-aligned crops; using
+# InsightFace's ArcFace template instead causes severe face distortion because the
+# VQ-VAE codebook never saw that alignment during training.
+_FFHQ_TEMPLATE_512 = np.array([
+    [192.98138, 239.94708],
+    [318.90277, 240.19360],
+    [256.63416, 314.01935],
+    [201.26117, 371.41043],
+    [313.08905, 371.15118],
+], dtype=np.float32)
+
+
+def _align_face_ffhq(img: np.ndarray, kps: np.ndarray, output_size: int = 512) -> np.ndarray:
+    """Warp face to FFHQ alignment at output_size × output_size."""
+    dst = _FFHQ_TEMPLATE_512 * (output_size / 512.0)
+    # LMEDS matches facexlib's FaceRestoreHelper — robust for exactly 5 landmarks
+    # (RANSAC's reprojection threshold can spuriously reject points and skew the fit).
+    M, _ = cv2.estimateAffinePartial2D(kps, dst, method=cv2.LMEDS)
+    if M is None:
+        return None
+    return cv2.warpAffine(
+        img, M, (output_size, output_size),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REFLECT_101,
+    )
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -158,9 +185,6 @@ def flush_track(track, send_queue):
                 # CodeFormer requires aligned faces — skip restoration entirely without alignment
                 # to avoid hallucinated/distorted output.
                 if getattr(track, 'kps', None) is not None:
-                    from insightface.utils import face_align
-                    # norm_crop requires image_size % 128 == 0 (model fixed at 128×128).
-                    # 128 → ESRGAN 4x → 512px → CodeFormer (min 128px) passes.
                     kps_arr = np.array(track.kps, dtype=np.float32)
                     if kps_arr.shape == (10,):
                         kps_arr = kps_arr.reshape(5, 2)
@@ -168,7 +192,11 @@ def flush_track(track, send_queue):
                         logger.warning(f"Skipping restoration: unexpected kps shape {kps_arr.shape}")
                         face_crop = None
                     else:
-                        face_crop = face_align.norm_crop(img, kps_arr, image_size=128)
+                        # Use FFHQ alignment (CodeFormer's training distribution).
+                        # InsightFace norm_crop uses ArcFace template which misaligns
+                        # eyes/mouth relative to what CodeFormer's VQ-VAE codebook expects,
+                        # causing severe distortion in the output.
+                        face_crop = _align_face_ffhq(img, kps_arr, output_size=128)
                 else:
                     # No landmarks → bbox square crop (unaligned).
                     # ESRGAN can still denoise/upscale but CodeFormer will be skipped
