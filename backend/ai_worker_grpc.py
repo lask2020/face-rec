@@ -162,8 +162,10 @@ def flush_track(track, send_queue):
                     # norm_crop requires image_size % 112 == 0 or % 128 == 0.
                     # 112 → ESRGAN 4x → 448px → CodeFormer (min 128px) passes.
                     kps_arr = np.array(track.kps, dtype=np.float32)
-                    if kps_arr.ndim != 2 or kps_arr.shape != (5, 2):
-                        logger.warning(f"Unexpected kps shape {kps_arr.shape}, skipping restoration")
+                    if kps_arr.shape == (10,):
+                        kps_arr = kps_arr.reshape(5, 2)
+                    if kps_arr.shape != (5, 2):
+                        logger.warning(f"Skipping restoration: unexpected kps shape {kps_arr.shape}")
                         face_crop = None
                     else:
                         face_crop = face_align.norm_crop(img, kps_arr, image_size=112)
