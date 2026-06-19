@@ -159,9 +159,14 @@ def flush_track(track, send_queue):
                 # to avoid hallucinated/distorted output.
                 if getattr(track, 'kps', None) is not None:
                     from insightface.utils import face_align
-                    # Use 64px so ESRGAN (skip threshold=80) always runs and upscales to 256px,
-                    # which then clears CodeFormer's 128px min-size gate.
-                    face_crop = face_align.norm_crop(img, np.array(track.kps), image_size=64)
+                    # norm_crop requires image_size % 112 == 0 or % 128 == 0.
+                    # 112 → ESRGAN 4x → 448px → CodeFormer (min 128px) passes.
+                    kps_arr = np.array(track.kps, dtype=np.float32)
+                    if kps_arr.ndim != 2 or kps_arr.shape != (5, 2):
+                        logger.warning(f"Unexpected kps shape {kps_arr.shape}, skipping restoration")
+                        face_crop = None
+                    else:
+                        face_crop = face_align.norm_crop(img, kps_arr, image_size=112)
                 else:
                     # No landmarks → bbox square crop (unaligned).
                     # ESRGAN can still denoise/upscale but CodeFormer will be skipped

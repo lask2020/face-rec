@@ -58,7 +58,9 @@ class FaceSuperResolver:
     its smallest side, otherwise it is a no-op (face is already large enough).
     """
 
-    MIN_FACE_SIZE_FOR_ESRGAN = int(os.getenv("ESRGAN_MIN_FACE_SIZE", "80"))
+    # norm_crop produces 112×112 — set threshold above 112 so ESRGAN always runs on aligned crops.
+    # 112 → ESRGAN 4x → 448px → CodeFormer (min 128px gate) passes cleanly.
+    MIN_FACE_SIZE_FOR_ESRGAN = int(os.getenv("ESRGAN_MIN_FACE_SIZE", "200"))
 
     def __init__(self):
         self.session = None
