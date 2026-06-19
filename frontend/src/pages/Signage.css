@@ -149,6 +149,30 @@
   text-overflow: ellipsis;
 }
 
+.signage-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  color: rgba(148, 163, 184, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.signage-empty p {
+  font-size: 1.5rem;
+  margin: 0;
+  font-weight: 400;
+}
+
+.signage-empty span {
+  font-size: 1rem;
+  color: rgba(148, 163, 184, 0.35);
+}
+
 .detection-time {
   font-size: 1rem;
   color: #94a3b8;

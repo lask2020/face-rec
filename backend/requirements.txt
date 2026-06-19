@@ -24,5 +24,8 @@ onnxruntime>=1.19.0
 # 5. AMD/Intel GPU (Windows DirectML)
 # onnxruntime-directml>=1.19.0
 
+# ─── License Plate Detection ───
+ultralytics>=8.4.0
+
 # ─── GUI Framework ───
 PyQt6>=6.6.0

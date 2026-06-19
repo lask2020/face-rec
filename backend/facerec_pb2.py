@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rfacerec.proto\x12\x07\x66\x61\x63\x65rec\"I\n\tFrameTask\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x12\n\nimage_data\x18\x02 \x01(\x0c\x12\x17\n\x0fis_registration\x18\x03 \x01(\x08\"z\n\x0fInferenceResult\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12&\n\ndetections\x18\x02 \x03(\x0b\x32\x12.facerec.Detection\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x17\n\x0fprocess_time_ms\x18\x04 \x01(\x02\"H\n\tDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x11\n\tembedding\x18\x02 \x03(\x02\x12\x1a\n\x12restored_face_jpeg\x18\x03 \x01(\x0c\x32Y\n\x14\x46\x61\x63\x65InferenceService\x12\x41\n\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x01\x30\x01\x42\x0bZ\t./facerecb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rfacerec.proto\x12\x07\x66\x61\x63\x65rec\"^\n\tFrameTask\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x12\n\nimage_data\x18\x02 \x01(\x0c\x12\x17\n\x0fis_registration\x18\x03 \x01(\x08\x12\x13\n\x0b\x64\x65tect_mode\x18\x04 \x01(\t\"\xad\x01\n\x0fInferenceResult\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12&\n\ndetections\x18\x02 \x03(\x0b\x32\x12.facerec.Detection\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x17\n\x0fprocess_time_ms\x18\x04 \x01(\x02\x12\x31\n\x10plate_detections\x18\x05 \x03(\x0b\x32\x17.facerec.PlateDetection\"H\n\tDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x11\n\tembedding\x18\x02 \x03(\x02\x12\x1a\n\x12restored_face_jpeg\x18\x03 \x01(\x0c\"\x80\x01\n\x0ePlateDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x14\n\x0cplate_number\x18\x02 \x01(\t\x12\x12\n\nconfidence\x18\x03 \x01(\x02\x12\x12\n\nplate_type\x18\x04 \x01(\t\x12\x10\n\x08province\x18\x05 \x01(\t\x12\x10\n\x08raw_text\x18\x06 \x01(\t2Y\n\x14\x46\x61\x63\x65InferenceService\x12\x41\n\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x01\x30\x01\x42\x0bZ\t./facerecb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,11 +33,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z\t./facerec'
   _globals['_FRAMETASK']._serialized_start=26
-  _globals['_FRAMETASK']._serialized_end=99
-  _globals['_INFERENCERESULT']._serialized_start=101
-  _globals['_INFERENCERESULT']._serialized_end=223
-  _globals['_DETECTION']._serialized_start=225
-  _globals['_DETECTION']._serialized_end=297
-  _globals['_FACEINFERENCESERVICE']._serialized_start=299
-  _globals['_FACEINFERENCESERVICE']._serialized_end=388
+  _globals['_FRAMETASK']._serialized_end=120
+  _globals['_INFERENCERESULT']._serialized_start=123
+  _globals['_INFERENCERESULT']._serialized_end=296
+  _globals['_DETECTION']._serialized_start=298
+  _globals['_DETECTION']._serialized_end=370
+  _globals['_PLATEDETECTION']._serialized_start=373
+  _globals['_PLATEDETECTION']._serialized_end=501
+  _globals['_FACEINFERENCESERVICE']._serialized_start=503
+  _globals['_FACEINFERENCESERVICE']._serialized_end=592
 # @@protoc_insertion_point(module_scope)

@@ -4,7 +4,8 @@ const navItems = [
   { path: '/', icon: '📊', label: 'Dashboard' },
   { path: '/persons', icon: '👤', label: 'Face Management' },
   { path: '/cameras', icon: '📹', label: 'Cameras' },
-  { path: '/detections', icon: '🔍', label: 'Detection Logs' },
+  { path: '/detections', icon: '🔍', label: 'ตรวจจับหน้า' },
+  { path: '/license-plates', icon: '🚗', label: 'ทะเบียนรถ' },
   { path: '/workers', icon: '🤖', label: 'AI Workers' },
 ];
 

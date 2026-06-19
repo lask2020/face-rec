@@ -88,6 +88,7 @@ export interface Camera {
   location: string;
   is_active: boolean;
   fps_process: number;
+  detect_mode: 'face' | 'plate' | 'both';
   created_at: string;
 }
 
@@ -200,10 +201,10 @@ export const api = {
   listCameras: () =>
     request<CameraList>('/cameras'),
 
-  createCamera: (data: { name: string; url: string; location?: string; fps_process?: number }) =>
+  createCamera: (data: { name: string; url: string; location?: string; fps_process?: number; detect_mode?: string }) =>
     request<Camera>('/cameras', { method: 'POST', body: JSON.stringify(data) }),
 
-  updateCamera: (id: number, data: { name?: string; url?: string; location?: string; fps_process?: number }) =>
+  updateCamera: (id: number, data: { name?: string; url?: string; location?: string; fps_process?: number; detect_mode?: string }) =>
     request<Camera>(`/cameras/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
 
   deleteCamera: (id: number) =>
@@ -234,6 +235,19 @@ export const api = {
 
   getOverview: () =>
     request<StatsOverview>('/detections/overview'),
+
+  // License Plate Detections
+  listPlateDetections: (params?: {
+    camera_id?: number;
+    date_from?: string;
+    date_to?: string;
+    page?: number;
+    limit?: number;
+  }) =>
+    request<PlateDetectionList>('/plate-detections', { params: params as Record<string, string | number> }),
+
+  getPlateDetectionStats: () =>
+    request<PlateDetectionStats>('/plate-detections/stats'),
 
   // Workers
   listWorkers: () =>
@@ -301,4 +315,45 @@ export interface SSImportResult {
   skipped: number;
   errors: string[];
   cameras: { id: number; name: string; url: string; location: string; ss_id: number }[];
+}
+
+// ─── License Plate Types ─────────────────────────────────────────────────────
+
+export interface PlateDetection {
+  id: number;
+  camera_id: number;
+  camera_name: string;
+  plate_number: string;
+  raw_text: string;
+  confidence: number;
+  plate_type: string;
+  province: string;
+  snapshot_url: string | null;
+  detected_at: string;
+}
+
+export interface PlateDetectionList {
+  items: PlateDetection[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface PlateDetectionStats {
+  total_today: number;
+  total_all: number;
+  by_camera: { camera_name: string; count: number }[];
+}
+
+export interface PlateDetectionEvent {
+  type: 'plate_detection';
+  camera_id: number;
+  camera_name: string;
+  plate_number: string;
+  raw_text: string;
+  confidence: number;
+  plate_type: string;
+  province: string;
+  snapshot_url: string | null;
+  timestamp: string;
 }

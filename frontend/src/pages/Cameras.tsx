@@ -16,6 +16,7 @@ export default function Cameras() {
   const [formName, setFormName] = useState('');
   const [formUrl, setFormUrl] = useState('');
   const [formLocation, setFormLocation] = useState('');
+  const [formDetectMode, setFormDetectMode] = useState<'face' | 'plate' | 'both'>('face');
   const [formFps, setFormFps] = useState(2);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
@@ -57,6 +58,7 @@ export default function Cameras() {
     setFormUrl('');
     setFormLocation('');
     setFormFps(2);
+    setFormDetectMode('face');
     setFormError('');
     setShowModal(true);
   }
@@ -67,6 +69,7 @@ export default function Cameras() {
     setFormUrl(camera.url);
     setFormLocation(camera.location);
     setFormFps(camera.fps_process);
+    setFormDetectMode((camera.detect_mode as 'face' | 'plate' | 'both') || 'face');
     setFormError('');
     setShowModal(true);
   }
@@ -85,6 +88,7 @@ export default function Cameras() {
           url: formUrl.trim(),
           location: formLocation.trim(),
           fps_process: formFps,
+          detect_mode: formDetectMode,
         });
       } else {
         await api.createCamera({
@@ -92,6 +96,7 @@ export default function Cameras() {
           url: formUrl.trim(),
           location: formLocation.trim(),
           fps_process: formFps,
+          detect_mode: formDetectMode,
         });
       }
       setShowModal(false);
@@ -385,6 +390,18 @@ export default function Cameras() {
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
               Higher FPS = more CPU usage. Recommended: 1-5 for face detection.
             </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">โหมดตรวจจับ (Detection Mode)</label>
+            <select
+              className="form-input"
+              value={formDetectMode}
+              onChange={(e) => setFormDetectMode(e.target.value as 'face' | 'plate' | 'both')}
+            >
+              <option value="face">ตรวจจับหน้าคน (Face Only)</option>
+              <option value="plate">ตรวจจับทะเบียนรถ (Plate Only)</option>
+              <option value="both">ทั้งสองอย่าง (Face + Plate)</option>
+            </select>
           </div>
         </Modal>
       )}

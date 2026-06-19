@@ -5,13 +5,14 @@ import Persons from './pages/Persons';
 import PersonDetail from './pages/PersonDetail';
 import Cameras from './pages/Cameras';
 import Detections from './pages/Detections';
+import LicensePlates from './pages/LicensePlates';
 import Workers from './pages/Workers';
 import Signage from './pages/Signage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
 
 export default function App() {
-  const { events, connected } = useWebSocket();
+  const { events, plateEvents, connected } = useWebSocket();
 
   return (
     <ErrorBoundary name="App Routing">
@@ -27,6 +28,7 @@ export default function App() {
                 <Route path="/persons/:id" element={<PersonDetail />} />
                 <Route path="/cameras" element={<Cameras />} />
                 <Route path="/detections" element={<Detections events={events} />} />
+                <Route path="/license-plates" element={<LicensePlates events={plateEvents} />} />
                 <Route path="/workers" element={<Workers />} />
               </Routes>
             </Layout>
@@ -36,4 +38,3 @@ export default function App() {
     </ErrorBoundary>
   );
 }
-

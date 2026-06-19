@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { DetectionEvent } from '../api/client';
+import type { DetectionEvent, PlateDetectionEvent } from '../api/client';
 
-/**
- * WebSocket hook for receiving real-time detection events.
- */
 export function useWebSocket() {
   const [events, setEvents] = useState<DetectionEvent[]>([]);
+  const [plateEvents, setPlateEvents] = useState<PlateDetectionEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number>();
@@ -25,8 +23,12 @@ export function useWebSocket() {
 
       ws.onmessage = (event) => {
         try {
-          const data: DetectionEvent = JSON.parse(event.data);
-          setEvents((prev) => [data, ...prev].slice(0, 100)); // Keep last 100 events
+          const data = JSON.parse(event.data);
+          if (data.type === 'plate_detection') {
+            setPlateEvents((prev) => [data as PlateDetectionEvent, ...prev].slice(0, 100));
+          } else {
+            setEvents((prev) => [data as DetectionEvent, ...prev].slice(0, 100));
+          }
         } catch (e) {
           console.error('Failed to parse WS event:', e);
         }
@@ -34,7 +36,6 @@ export function useWebSocket() {
 
       ws.onclose = () => {
         setConnected(false);
-        console.log('WebSocket disconnected, reconnecting in 3s...');
         reconnectTimer.current = window.setTimeout(connect, 3000);
       };
 
@@ -57,5 +58,5 @@ export function useWebSocket() {
 
   const clearEvents = useCallback(() => setEvents([]), []);
 
-  return { events, connected, clearEvents };
+  return { events, plateEvents, connected, clearEvents };
 }

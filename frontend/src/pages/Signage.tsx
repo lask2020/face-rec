@@ -88,6 +88,16 @@ export default function Signage({ events }: SignageProps) {
       </div>
 
       <div className="signage-cards-area">
+        {cards.length === 0 && (
+          <div className="signage-empty">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="rgba(148,163,184,0.4)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="8" r="4"/>
+              <path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>
+            </svg>
+            <p>กำลังรอข้อมูลการตรวจจับ...</p>
+            <span>จะแสดงเมื่อมีการตรวจพบบุคคลที่ระบบรู้จัก</span>
+          </div>
+        )}
         {cards.map((card) => (
           <div key={card.uniqueId} className="signage-card">
             <div className="card-image-wrapper">

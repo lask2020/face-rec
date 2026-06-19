@@ -19,7 +19,6 @@ func main() {
 		BodyLimit: 10 * 1024 * 1024,
 	})
 
-
 	app.Use(logger.New())
 	app.Use(cors.New())
 
@@ -33,7 +32,7 @@ func main() {
 	go RestartActiveCameras()
 
 	api := app.Group("/api")
-	
+
 	// Cameras
 	api.Get("/cameras", GetCameras)
 	api.Post("/cameras", AddCamera)
@@ -52,10 +51,14 @@ func main() {
 	api.Post("/persons/:id/faces", UploadFace)
 	api.Delete("/persons/:id/faces/:face_id", DeleteFace)
 
-	// Detections
+	// Face Detections
 	api.Get("/detections", listDetections)
 	api.Get("/detections/stats", getDetectionStats)
 	api.Get("/detections/overview", getOverviewStats)
+
+	// License Plate Detections
+	api.Get("/plate-detections", listPlateDetections)
+	api.Get("/plate-detections/stats", getPlateDetectionStats)
 
 	// Workers
 	api.Get("/workers", GetWorkers)
@@ -74,7 +77,7 @@ func main() {
 	app.Get("/ws/events", websocket.New(EventsWebSocket))
 
 	log.Println("Go Control Plane starting on port 8000...")
-	
+
 	// Start Fiber REST server in background
 	go func() {
 		if err := app.Listen(":8000"); err != nil {

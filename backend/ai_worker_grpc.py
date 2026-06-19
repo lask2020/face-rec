@@ -22,6 +22,9 @@ import facerec_pb2
 import facerec_pb2_grpc
 from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 from app.face_restorer import face_restorer
+from app.license_plate import LicensePlateEngine, PlateResult
+
+license_plate_engine = LicensePlateEngine()
 
 # FFHQ 5-point landmark template for 512×512.
 # CodeFormer (and GFPGAN) were trained exclusively on FFHQ-aligned crops; using
@@ -284,7 +287,7 @@ def track_flusher(send_queue, stop_event=None):
                 logger.error(f"Error in track_flusher: {e}")
 
 
-def process_task(task_id, image_data, is_reg, send_queue):
+def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
     try:
         start_time = time.time()
         # Decode image from JPEG bytes
@@ -328,35 +331,66 @@ def process_task(task_id, image_data, is_reg, send_queue):
             # Parse camera_id from task_id (cameraID_timestamp_uuid)
             parts = task_id.split('_')
             camera_id = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
-            
+
             now_time = time.time()
             with cameras_lock:
                 if camera_id not in last_seen_camera:
                     logger.info(f"Started processing stream for Camera {camera_id}")
                 last_seen_camera[camera_id] = now_time
-            
-            faces = face_engine.detect_faces(img)
-            
+
+            plate_proto_list = []
+            faces = []
+
+            # Run plate detection when mode is "plate" or "both"
+            if detect_mode in ("plate", "both") and license_plate_engine.ready:
+                plate_results: list[PlateResult] = license_plate_engine.detect(img)
+                for pr in plate_results:
+                    plate_proto_list.append(facerec_pb2.PlateDetection(
+                        bbox=pr.bbox,
+                        plate_number=pr.plate_number or "",
+                        confidence=pr.confidence,
+                        plate_type=pr.plate_type,
+                        province=pr.province or "",
+                        raw_text=pr.raw_text,
+                    ))
+                if plate_results:
+                    logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s)")
+
+            # Run face detection when mode is "face" or "both"
+            if detect_mode in ("face", "both"):
+                faces = face_engine.detect_faces(img)
+
             duration_ms = (time.time() - start_time) * 1000
-            if len(faces) > 0:
+            if faces:
                 logger.info(f"Processed frame for Camera {camera_id} in {duration_ms:.1f}ms - detected {len(faces)} face(s)")
-            
+
             with stats_lock:
                 recent_process_times.append(duration_ms)
                 if len(recent_process_times) > 50:
                     recent_process_times.pop(0)
-            
+
+            # If only plate mode and we got results, send immediately
+            if detect_mode == "plate":
+                if plate_proto_list:
+                    send_queue.put(facerec_pb2.InferenceResult(
+                        task_id=task_id,
+                        detections=[],
+                        plate_detections=plate_proto_list,
+                        process_time_ms=duration_ms,
+                    ))
+                return
+
             with tracks_lock:
                 for face in faces:
                     emb = face.embedding
                     bbox = face.bbox
                     sharpness = face.sharpness
                     frontality = face.frontality
-                    
+
                     # Check if on cooldown
                     if is_on_cooldown(emb):
                         continue
-                        
+
                     # Try to associate with active tracks for this camera
                     matched_track = None
                     for track in active_tracks.values():
@@ -365,13 +399,24 @@ def process_task(task_id, image_data, is_reg, send_queue):
                             if sim > 0.6:
                                 matched_track = track
                                 break
-                                
+
                     if matched_track:
                         matched_track.update(bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
                     else:
                         # Create new track
                         new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
                         active_tracks[new_track.track_id] = new_track
+
+            # Attach plate detections to flush result (for "both" mode)
+            if plate_proto_list:
+                # Store for later use by flush_track via a thread-local or attach to track
+                # For simplicity, send a separate result message now
+                send_queue.put(facerec_pb2.InferenceResult(
+                    task_id=task_id,
+                    detections=[],
+                    plate_detections=plate_proto_list,
+                    process_time_ms=duration_ms,
+                ))
                         
     except Exception as ex:
         logger.error(f"Error processing task {task_id}: {ex}")
@@ -475,11 +520,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                         task_id = task.task_id
                         image_data = task.image_data
                         is_reg = task.is_registration
+                        detect_mode = task.detect_mode if task.detect_mode else "face"
 
-                        logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}")
+                        logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}, detect_mode={detect_mode}")
 
                         # Submit task to thread pool
-                        executor.submit(process_task, task_id, image_data, is_reg, send_queue)
+                        executor.submit(process_task, task_id, image_data, is_reg, send_queue, detect_mode)
 
         except grpc.RpcError as e:
             logger.error(f"gRPC stream connection error: {e.details() if hasattr(e, 'details') else e}. Retrying in 5 seconds...")

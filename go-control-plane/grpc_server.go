@@ -447,7 +447,12 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 
 	ctx := context.Background()
 
-	// If no faces detected, we skip logging and S3 uploads
+	// Handle plate detections (independent of face detections)
+	if len(result.PlateDetections) > 0 {
+		handlePlateDetections(ctx, result, task)
+	}
+
+	// If no faces detected, we skip face logging and S3 uploads
 	if len(result.Detections) == 0 {
 		log.Printf("[gRPC Debug] TaskId=%s has 0 detections, skipping", result.TaskId)
 		return
@@ -691,11 +696,19 @@ func StartFrameDispatcher(ctx context.Context) {
 					pendingTasksMu.Unlock()
 				})
 
+				// Look up camera detect_mode
+				detectMode := "face"
+				var camForMode Camera
+				if DB.First(&camForMode, cameraID).Error == nil && camForMode.DetectMode != "" {
+					detectMode = camForMode.DetectMode
+				}
+
 				// Send task over stream
 				err = worker.stream.Send(&facerec.FrameTask{
 					TaskId:         taskID,
 					ImageData:      data,
 					IsRegistration: false,
+					DetectMode:     detectMode,
 				})
 
 				if err != nil {
