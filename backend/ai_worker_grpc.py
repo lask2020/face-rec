@@ -22,7 +22,6 @@ import facerec_pb2
 import facerec_pb2_grpc
 from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 from app.face_restorer import face_restorer
-from app.face_super_resolver import face_super_resolver
 
 # FFHQ 5-point landmark template for 512×512.
 # CodeFormer (and GFPGAN) were trained exclusively on FFHQ-aligned crops; using
@@ -176,60 +175,51 @@ def flush_track(track, send_queue):
     add_cooldown(track.embedding)
     
     restored_face_bytes = b""
-    if face_restorer.is_enabled() or face_super_resolver.is_enabled():
+    if face_restorer.is_enabled():
         try:
-            nparr = np.frombuffer(track.image_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is not None:
-                # Prefer landmark-aligned crop; fall back to bbox crop only when kps unavailable.
-                # CodeFormer requires aligned faces — skip restoration entirely without alignment
-                # to avoid hallucinated/distorted output.
-                if getattr(track, 'kps', None) is not None:
-                    kps_arr = np.array(track.kps, dtype=np.float32)
-                    if kps_arr.shape == (10,):
-                        kps_arr = kps_arr.reshape(5, 2)
-                    if kps_arr.shape != (5, 2):
-                        logger.warning(f"Skipping restoration: unexpected kps shape {kps_arr.shape}")
-                        face_crop = None
-                    else:
-                        # Use FFHQ alignment (CodeFormer's training distribution).
-                        # InsightFace norm_crop uses ArcFace template which misaligns
-                        # eyes/mouth relative to what CodeFormer's VQ-VAE codebook expects,
-                        # causing severe distortion in the output.
-                        face_crop = _align_face_ffhq(img, kps_arr, output_size=128)
+            # Landmarks are required: CodeFormer only works on FFHQ-aligned faces.
+            # Without kps we can't align, and feeding an unaligned crop produces
+            # severe distortion — so skip restoration entirely in that case.
+            kps = getattr(track, 'kps', None)
+            if kps is None:
+                logger.debug(f"Skipping restoration for track {track.track_id}: no landmarks")
+            else:
+                kps_arr = np.array(kps, dtype=np.float32)
+                if kps_arr.shape == (10,):
+                    kps_arr = kps_arr.reshape(5, 2)
+                if kps_arr.shape != (5, 2):
+                    logger.warning(f"Skipping restoration: unexpected kps shape {kps_arr.shape}")
                 else:
-                    # No landmarks → bbox square crop (unaligned).
-                    # ESRGAN can still denoise/upscale but CodeFormer will be skipped
-                    # (its min_face_size gate won't be reached without proper alignment
-                    # producing clean input).
-                    h_img, w_img = img.shape[:2]
-                    cx = int((track.bbox[0] + track.bbox[2]) / 2)
-                    cy = int((track.bbox[1] + track.bbox[3]) / 2)
-                    side = max(int(track.bbox[2] - track.bbox[0]), int(track.bbox[3] - track.bbox[1]))
-                    padding = int(side * 0.3)
-                    x1 = max(0, cx - side // 2 - padding)
-                    y1 = max(0, cy - side // 2 - padding)
-                    x2 = min(w_img, cx + side // 2 + padding)
-                    y2 = min(h_img, cy + side // 2 + padding)
-                    face_crop = img[y1:y2, x1:x2]
-
-                if face_crop is not None and face_crop.size > 0:
-                    # Step 1: Real-ESRGAN — upscale + denoise (no-op if face already large)
-                    enhanced_crop = face_super_resolver.upscale(face_crop)
-
-                    # Step 2: CodeFormer — face-specific restoration on the upscaled crop
-                    restored = face_restorer.restore_face(enhanced_crop)
-                    final_img = restored if restored is not None else enhanced_crop
-
-                    success, encoded_img = cv2.imencode(".jpg", final_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                    if success:
-                        restored_face_bytes = encoded_img.tobytes()
-                        pipeline = []
-                        if face_super_resolver.is_enabled():
-                            pipeline.append("ESRGAN")
-                        if restored is not None:
-                            pipeline.append("CodeFormer")
-                        logger.info(f"Restored face for track {track.track_id} via {' → '.join(pipeline)}")
+                    nparr = np.frombuffer(track.image_bytes, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    if img is not None:
+                        # FFHQ-align directly to 512 — CodeFormer's native input size and
+                        # training distribution. It is a generative restorer that performs
+                        # its own super-resolution internally, so no upscaler pre-pass is needed.
+                        face_crop = _align_face_ffhq(img, kps_arr, output_size=512)
+                        if face_crop is not None and face_crop.size > 0:
+                            # Quality gate: CodeFormer helps blurry/small faces but
+                            # over-smooths faces that are already sharp AND large,
+                            # shifting their appearance. Skip it for good-quality faces
+                            # and ship the plain FFHQ-aligned crop instead. This also
+                            # cuts contention on the global GPU inference lock.
+                            sharpness_max = float(os.getenv("CODEFORMER_RESTORE_SHARPNESS_MAX", "120.0"))
+                            area_max = float(os.getenv("CODEFORMER_RESTORE_AREA_MAX", "40000.0"))
+                            already_good = track.sharpness >= sharpness_max and track.face_area >= area_max
+                            if already_good:
+                                restored = None
+                                logger.debug(
+                                    f"Skipping CodeFormer for track {track.track_id}: face already "
+                                    f"sharp+large (sharpness {track.sharpness:.0f}, area {track.face_area:.0f})"
+                                )
+                            else:
+                                restored = face_restorer.restore_face(face_crop)
+                            final_img = restored if restored is not None else face_crop
+                            success, encoded_img = cv2.imencode(".jpg", final_img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                            if success:
+                                restored_face_bytes = encoded_img.tobytes()
+                                stages = "CodeFormer" if restored is not None else "aligned crop"
+                                logger.info(f"Restored face for track {track.track_id} via {stages}")
         except Exception as e:
             logger.error(f"Error during face restoration in flusher: {e}", exc_info=True)
 
@@ -401,14 +391,6 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
     face_engine.initialize()
     logger.info("Face Engine initialized successfully.")
     
-    # Initialize Real-ESRGAN Super Resolver (runs before CodeFormer)
-    logger.info("Initializing Face Super Resolver (Real-ESRGAN)...")
-    face_super_resolver.initialize()
-    if face_super_resolver.is_enabled():
-        logger.info("Face Super Resolver initialized successfully.")
-    else:
-        logger.warning("Face Super Resolver disabled (model not found or load failed).")
-
     # Initialize CodeFormer Face Restorer
     logger.info("Initializing Face Restorer (CodeFormer)...")
     face_restorer.initialize()

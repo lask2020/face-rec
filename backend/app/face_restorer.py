@@ -29,7 +29,7 @@ class FaceRestorer:
         except ValueError:
             self.fidelity = 0.9
         # Minimum face dimension (pixels) required before running CodeFormer.
-        # After Real-ESRGAN x4, a 64px face becomes 256px — well above this gate.
+        # The worker feeds FFHQ-aligned 512px crops, which always clear this gate.
         try:
             self.min_face_size = int(os.getenv("CODEFORMER_MIN_FACE_SIZE", "128"))
         except ValueError:
@@ -130,8 +130,7 @@ class FaceRestorer:
         h, w = face_crop_bgr.shape[:2]
         if h < self.min_face_size or w < self.min_face_size:
             logger.debug(
-                f"Face {w}x{h} is below min size ({self.min_face_size}px) for CodeFormer — "
-                "run Real-ESRGAN first to upscale"
+                f"Face {w}x{h} is below min size ({self.min_face_size}px) for CodeFormer"
             )
             return None
 

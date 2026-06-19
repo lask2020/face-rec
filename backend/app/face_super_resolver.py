@@ -183,7 +183,13 @@ class FaceSuperResolver:
                 tile_in = img_chw[:, src_y1:src_y2, src_x1:src_x2][np.newaxis]  # (1,C,H,W)
 
                 with inference_lock:
-                    tile_out = self.session.run(None, {self._input_name: tile_in})[0][0]  # (C,H*s,W*s)
+                    raw_out = self.session.run(None, {self._input_name: tile_in})[0]
+                # Normalize output to (C, H*s, W*s): some ONNX exports include a leading
+                # batch dim (4D), others don't (3D). Indexing [0][0] blindly assumed 4D
+                # and crashed ("too many indices") on 3D-output models.
+                if raw_out.ndim == 4:
+                    raw_out = raw_out[0]
+                tile_out = raw_out  # (C,H*s,W*s)
 
                 # How many pixels of padding exist on each side of this tile's output
                 pad_left = (ix * tile_size - src_x1) * scale
