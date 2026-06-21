@@ -113,9 +113,27 @@ def _pad_square(image: np.ndarray) -> tuple[np.ndarray, int, int]:
     return canvas, xp, yp
 
 
-_MODELS_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'models')
-)
+def _resolve_models_dir() -> str:
+    """
+    Resolve the model directory using the same strategy as face_engine:
+      1. $FACE_DATA_ROOT/models  (explicit override)
+      2. /app/data/models        (Docker container)
+      3. data/models             (CWD = backend/)
+      4. backend/data/models     (CWD = project root)
+    """
+    data_root = os.getenv("FACE_DATA_ROOT")
+    if not data_root:
+        if os.path.isdir("/app/data"):
+            data_root = "/app/data"
+        elif os.path.isdir("data"):
+            data_root = "data"
+        elif os.path.isdir("backend/data"):
+            data_root = "backend/data"
+        else:
+            data_root = "data"
+    return os.path.join(data_root, "models")
+
+_MODELS_DIR = _resolve_models_dir()
 
 
 def _resolve_providers() -> list[str]:
