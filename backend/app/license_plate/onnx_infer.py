@@ -10,8 +10,12 @@ class works for CPU / CUDA / DirectML / CoreML.
 """
 
 from __future__ import annotations
+import logging
+import os
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 # ── letterbox / scale helpers ─────────────────────────────────────────────────
@@ -101,9 +105,13 @@ class YoloOnnxSession:
         )
 
         used = self.session.get_providers()
-        print(f"[YoloOnnxSession] loaded {onnx_path.split('/')[-1]}  "
-              f"imgsz={self.imgsz}  post_nms={self.is_post_nms}  "
-              f"provider={used[0]}")
+        logger.info(
+            "ONNX session ready: %s  imgsz=%d  post_nms=%s  provider=%s",
+            os.path.basename(onnx_path),
+            self.imgsz,
+            self.is_post_nms,
+            used[0],
+        )
 
     # ── public API ──────────────────────────────────────────────────────────
 

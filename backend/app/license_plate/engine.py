@@ -7,10 +7,13 @@ Usage:
 """
 
 from __future__ import annotations
+import logging
 import os
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -178,21 +181,32 @@ class LicensePlateEngine:
             from .onnx_infer import YoloOnnxSession
 
             providers = _resolve_providers()
-            print(f"[LicensePlateEngine] loading ONNX models, providers={providers}")
+            logger.info("Loading ONNX models with providers: %s", providers)
 
             if os.path.exists(names_json):
                 with open(names_json, encoding='utf-8') as f:
                     raw = json.load(f)
                 self._char_names = {int(k): v for k, v in raw.items()}
+                logger.debug("Loaded %d char class names from %s", len(self._char_names), names_json)
             else:
-                print("[LicensePlateEngine] names JSON not found — class names unavailable")
+                logger.warning("names JSON not found at %s — class names will be numeric", names_json)
 
+            logger.info("Loading plate model: %s", os.path.basename(plate_onnx))
             self._plate_model = YoloOnnxSession(plate_onnx, providers, names={0: 'license-plate'})
+
+            logger.info("Loading char model: %s", os.path.basename(char_onnx))
             self._char_model  = YoloOnnxSession(char_onnx, providers, names=self._char_names)
-            self._use_onnx    = True
-            print(f"[LicensePlateEngine] ONNX models loaded — provider={self._plate_model.session.get_providers()[0]}")
+
+            self._use_onnx = True
+            active_provider = self._plate_model.session.get_providers()[0]
+            logger.info(
+                "License plate engine ready (ONNX) — provider=%s  plate_imgsz=%d  char_imgsz=%d",
+                active_provider,
+                self._plate_model.imgsz,
+                self._char_model.imgsz,
+            )
         except Exception as e:
-            print(f"[LicensePlateEngine] ONNX load failed ({e}), falling back to .pt")
+            logger.warning("ONNX load failed (%s) — falling back to .pt", e)
             self._load_pt()
 
     def _load_pt(self):
@@ -210,16 +224,22 @@ class LicensePlateEngine:
             char_pt  = os.path.join(_MODELS_DIR, 'thai_char_yolo26s.pt')
 
             if os.path.exists(plate_pt) and os.path.exists(char_pt):
+                logger.info("Loading plate model (.pt): %s", plate_pt)
                 self._plate_model = YOLO(plate_pt)
+                logger.info("Loading char model (.pt): %s", char_pt)
                 self._char_model  = YOLO(char_pt)
                 self._plate_model.to(device)
                 self._char_model.to(device)
                 self._use_onnx = False
-                print(f"[LicensePlateEngine] .pt models loaded on {device}")
+                logger.info("License plate engine ready (.pt) — device=%s", device)
             else:
-                print(f"[LicensePlateEngine] no model files found in {_MODELS_DIR} — disabled")
+                logger.error(
+                    "No model files found in %s — plate detection disabled. "
+                    "Run: python future/export_to_onnx.py",
+                    _MODELS_DIR,
+                )
         except Exception as e:
-            print(f"[LicensePlateEngine] .pt load error: {e}")
+            logger.error("Failed to load .pt models: %s", e)
 
     @property
     def ready(self) -> bool:
@@ -288,7 +308,7 @@ class LicensePlateEngine:
             results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
                                                  LicensePlateValidator))
         except Exception as e:
-            print(f"[LicensePlateEngine] ONNX detect error: {e}")
+            logger.error("ONNX detect error: %s", e, exc_info=True)
         return results
 
     # ── .pt path ────────────────────────────────────────────────────────────
@@ -356,7 +376,7 @@ class LicensePlateEngine:
             results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
                                                  LicensePlateValidator))
         except Exception as e:
-            print(f"[LicensePlateEngine] .pt detect error: {e}")
+            logger.error(".pt detect error: %s", e, exc_info=True)
         return results
 
     # ── shared char assembly ─────────────────────────────────────────────────
