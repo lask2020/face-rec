@@ -114,7 +114,7 @@ def _pad_square(image: np.ndarray) -> tuple[np.ndarray, int, int]:
 
 
 _MODELS_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), '..', '..', 'models')
+    os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'models')
 )
 
 
