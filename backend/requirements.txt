@@ -23,6 +23,7 @@ onnxruntime>=1.19.0
 
 # 5. AMD/Intel GPU (Windows DirectML)
 # onnxruntime-directml>=1.19.0
+# Then set env: ONNX_PROVIDER=DmlExecutionProvider
 
 # ─── License Plate Detection ───
 ultralytics>=8.4.0

@@ -520,7 +520,7 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                         task_id = task.task_id
                         image_data = task.image_data
                         is_reg = task.is_registration
-                        detect_mode = task.detect_mode if task.detect_mode else "face"
+                        detect_mode = getattr(task, 'detect_mode', None) or "face"
 
                         logger.debug(f"Received task: id={task_id}, size={len(image_data)} bytes, is_registration={is_reg}, detect_mode={detect_mode}")
 
