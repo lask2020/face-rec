@@ -200,8 +200,12 @@ TRACK_TIMEOUT = 3.0  # seconds of inactivity before flushing
 TRACK_MAX_DURATION = 5.0  # max seconds a track can run before flushing
 COOLDOWN_DURATION = 30.0  # seconds
 
-PLATE_TRACK_TIMEOUT = 2.0      # seconds of inactivity before flushing
-PLATE_TRACK_MAX_DURATION = 4.0
+# Inactivity window before a plate track flushes. Plate detections are sparse
+# (a plate is only readable for a moment as a vehicle passes), so this needs to
+# be wide enough that consecutive detections of the same plate land in one track
+# and accumulate >= MIN_PLATE_HITS before timing out.
+PLATE_TRACK_TIMEOUT = float(os.getenv("PLATE_TRACK_TIMEOUT", "6.0"))      # seconds of inactivity before flushing
+PLATE_TRACK_MAX_DURATION = float(os.getenv("PLATE_TRACK_MAX_DURATION", "12.0"))
 PLATE_COOLDOWN_DURATION = 10.0 # don't re-report same plate for 10 s
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "2"))  # discard single-frame detections
