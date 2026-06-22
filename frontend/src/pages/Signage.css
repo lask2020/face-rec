@@ -1,186 +1,341 @@
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+
 .signage-container {
   width: 100vw;
   height: 100vh;
-  background: #0f172a;
+  background: #060b18;
   color: #fff;
   overflow: hidden;
   position: fixed;
-  top: 0;
-  left: 0;
+  top: 0; left: 0;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   display: flex;
   flex-direction: column;
   z-index: 9999;
 }
 
-.signage-background {
+/* ── Aurora background ────────────────────────────────────────────────────── */
+
+.signage-aurora {
   position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background-image: radial-gradient(circle at 15% 50%, rgba(99, 102, 241, 0.2), transparent 40%),
-                    radial-gradient(circle at 85% 30%, rgba(236, 72, 153, 0.2), transparent 40%);
-  z-index: 0;
+  inset: 0;
   pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
 }
+
+.aurora-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(130px);
+  opacity: 0.18;
+}
+
+.orb-1 {
+  width: 700px; height: 700px;
+  background: #6366f1;
+  top: -250px; left: -150px;
+  animation: orbFloat1 20s ease-in-out infinite;
+}
+
+.orb-2 {
+  width: 550px; height: 550px;
+  background: #a855f7;
+  bottom: -180px; right: -120px;
+  animation: orbFloat2 25s ease-in-out infinite;
+}
+
+.orb-3 {
+  width: 420px; height: 420px;
+  background: #0891b2;
+  top: 50%; left: 55%;
+  transform: translate(-50%, -50%);
+  animation: orbFloat3 17s ease-in-out infinite;
+  opacity: 0.12;
+}
+
+@keyframes orbFloat1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%       { transform: translate(90px, 70px) scale(1.12); }
+  66%       { transform: translate(-50px, 110px) scale(0.93); }
+}
+
+@keyframes orbFloat2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%       { transform: translate(-110px, -90px) scale(1.18); }
+}
+
+@keyframes orbFloat3 {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.12; }
+  50%       { transform: translate(-44%, -57%) scale(1.25); opacity: 0.07; }
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
 
 .signage-header {
   position: relative;
   z-index: 10;
-  padding: 1.5rem 4rem;
+  padding: 1.25rem 3.5rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(20px);
+  background: rgba(6, 11, 24, 0.75);
+  backdrop-filter: blur(24px) saturate(1.4);
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03), 0 8px 40px rgba(0, 0, 0, 0.5);
 }
 
-.signage-header-title {
+.signage-header-left {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 1.1rem;
 }
 
-.signage-header h1 {
-  font-size: 2.25rem;
-  margin: 0;
+.signage-logo {
+  width: 50px; height: 50px;
+  border-radius: 14px;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(129, 140, 248, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 24px rgba(99, 102, 241, 0.18);
+  flex-shrink: 0;
+}
+
+.signage-title {
+  font-size: 1.65rem;
   font-weight: 700;
-  background: linear-gradient(to right, #818cf8, #c084fc);
+  margin: 0;
+  background: linear-gradient(135deg, #e2e8f0 0%, #818cf8 50%, #c084fc 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }
 
-.signage-header .time {
-  font-size: 3rem;
-  font-weight: 300;
-  margin: 0;
+.signage-subtitle {
+  font-size: 0.72rem;
+  margin: 0.2rem 0 0;
+  color: rgba(148, 163, 184, 0.5);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.signage-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+}
+
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: #34d399;
+  text-transform: uppercase;
+  margin-bottom: 0.1rem;
+}
+
+.live-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px #34d399;
+  animation: livePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 7px #34d399; }
+  50%       { opacity: 0.55; box-shadow: 0 0 18px #34d399, 0 0 6px #34d399; }
+}
+
+.signage-clock {
+  font-size: 2.6rem;
+  font-weight: 200;
   font-variant-numeric: tabular-nums;
   color: #f8fafc;
+  letter-spacing: -0.03em;
+  line-height: 1;
 }
+
+.signage-date {
+  font-size: 0.75rem;
+  color: rgba(148, 163, 184, 0.4);
+  letter-spacing: 0.02em;
+}
+
+/* ── Cards area ───────────────────────────────────────────────────────────── */
 
 .signage-cards-area {
   position: relative;
   flex: 1;
   z-index: 5;
-  padding: 3rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2rem;
-  align-content: flex-start;
-  justify-content: center;
   overflow: hidden;
 }
+
+/* ── Single card — absolute, drifts along randomised waypoints ────────────── */
 
 .signage-card {
-  width: 260px;
-  background: rgba(30, 41, 59, 0.6);
-  backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 24px;
-  padding: 1.5rem;
+  position: absolute;
+  width: 330px;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(20px) saturate(1.3);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-left: 3px solid var(--accent-border);
+  border-radius: 20px;
+  padding: 1.1rem 1.25rem;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  
-  /* Animation setup */
-  animation: cardEnterFloat 15s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
-  opacity: 0;
-  transform: translateY(100px) scale(0.8);
-}
-
-@keyframes cardEnterFloat {
-  0% {
-    opacity: 0;
-    transform: translateY(100px) scale(0.8);
-  }
-  4% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-  85% {
-    opacity: 1;
-    transform: translateY(-15px) scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-40px) scale(0.9);
-  }
-}
-
-.card-image-wrapper {
-  width: 160px;
-  height: 160px;
-  border-radius: 50%;
+  gap: 1.1rem;
+  box-shadow:
+    0 0 45px var(--accent-glow),
+    0 20px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  background-image: linear-gradient(135deg, var(--accent-bg), transparent 55%);
   overflow: hidden;
-  margin-bottom: 1.5rem;
-  border: 4px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  position: relative;
+  /* Duration driven by --lifetime so JS and CSS stay in sync */
+  animation: cardFloat var(--lifetime, 30s) ease-in-out forwards;
+}
+
+@keyframes cardFloat {
+  0%   { opacity: 0;   transform: translate(0px, 28px) scale(0.88); }
+  7%   { opacity: 1;   transform: translate(0px, 0px)  scale(1); }
+  28%  { opacity: 1;   transform: translate(var(--dx1), var(--dy1)) scale(1.01); }
+  55%  { opacity: 1;   transform: translate(var(--dx2), var(--dy2)) scale(0.99); }
+  82%  { opacity: 1;   transform: translate(var(--dx3), var(--dy3)) scale(1); }
+  100% { opacity: 0;   transform: translate(var(--dx3), calc(var(--dy3) - 20px)) scale(0.94); }
+}
+
+/* ── Face image ───────────────────────────────────────────────────────────── */
+
+.card-face-wrapper {
+  flex-shrink: 0;
+  width: 78px; height: 78px;
+  border-radius: 15px;
+  overflow: hidden;
+  border: 2px solid var(--accent-border);
+  box-shadow: 0 0 22px var(--accent-glow), 0 0 6px var(--accent-glow);
   background: #0f172a;
 }
 
-.card-image-wrapper::after {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  border-radius: 50%;
-  box-shadow: inset 0 0 20px rgba(255, 255, 255, 0.2);
-}
-
-.card-image {
-  width: 100%;
-  height: 100%;
+.card-face {
+  width: 100%; height: 100%;
   object-fit: cover;
 }
 
-.card-info {
-  text-align: center;
-  width: 100%;
+/* ── Card body ────────────────────────────────────────────────────────────── */
+
+.card-body {
+  flex: 1;
+  min-width: 0;
 }
 
-.person-name {
-  font-size: 1.4rem;
+.card-name {
+  font-size: 1.15rem;
   font-weight: 600;
-  margin: 0 0 0.5rem 0;
-  color: #f8fafc;
+  margin: 0 0 0.18rem;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.015em;
+}
+
+.card-camera {
+  font-size: 0.7rem;
+  color: rgba(148, 163, 184, 0.5);
+  margin: 0 0 0.28rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.card-time {
+  font-size: 0.82rem;
+  color: var(--accent-border);
+  margin: 0 0 0.7rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+/* ── Progress bar ─────────────────────────────────────────────────────────── */
+
+.card-progress {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.card-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-border), color-mix(in srgb, var(--accent-border) 60%, transparent));
+  border-radius: 999px;
+  box-shadow: 0 0 8px var(--accent-border);
+  animation: progressDrain var(--lifetime, 30s) linear forwards;
+}
+
+@keyframes progressDrain {
+  from { width: 100%; }
+  to   { width: 0%; }
+}
+
+/* ── Empty state ──────────────────────────────────────────────────────────── */
+
 .signage-empty {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  top: 50%; left: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
-  color: rgba(148, 163, 184, 0.5);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1rem;
+  gap: 1.1rem;
+  user-select: none;
+}
+
+.empty-scanner {
+  position: relative;
+  width: 90px; height: 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scanner-line {
+  position: absolute;
+  left: 8px; right: 8px;
+  height: 1.5px;
+  background: linear-gradient(90deg, transparent, rgba(129, 140, 248, 0.7), transparent);
+  border-radius: 999px;
+  animation: scanMove 2.4s ease-in-out infinite;
+}
+
+@keyframes scanMove {
+  0%        { top: 12px; opacity: 0; }
+  15%, 85%  { opacity: 1; }
+  50%       { top: 78px; }
+  100%      { top: 12px; opacity: 0; }
 }
 
 .signage-empty p {
-  font-size: 1.5rem;
+  font-size: 1.15rem;
   margin: 0;
+  color: rgba(148, 163, 184, 0.4);
   font-weight: 400;
 }
 
 .signage-empty span {
-  font-size: 1rem;
-  color: rgba(148, 163, 184, 0.35);
-}
-
-.detection-time {
-  font-size: 1rem;
-  color: #94a3b8;
-  margin: 0;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 0.35rem 0.8rem;
-  border-radius: 999px;
-  display: inline-block;
-  font-variant-numeric: tabular-nums;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.82rem;
+  color: rgba(148, 163, 184, 0.25);
+  max-width: 320px;
+  line-height: 1.5;
 }
