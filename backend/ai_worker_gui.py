@@ -5,7 +5,8 @@ import logging
 import threading
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QComboBox, QPushButton, QTextEdit, QFrame, QGridLayout
+    QLabel, QLineEdit, QComboBox, QPushButton, QTextEdit, QFrame, QGridLayout,
+    QSpinBox, QDoubleSpinBox
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt, QThread
 from PyQt6.QtGui import QFont, QTextCursor
@@ -36,10 +37,11 @@ class WorkerThread(QThread):
     error_signal = pyqtSignal(str)
     log_signal = pyqtSignal(str)
 
-    def __init__(self, url, provider):
+    def __init__(self, url, provider, plate_settings=None):
         super().__init__()
         self.url = url
         self.provider = provider
+        self.plate_settings = plate_settings or {}
         self.process = None
         self.is_running = True
 
@@ -56,6 +58,9 @@ class WorkerThread(QThread):
             env = os.environ.copy()
             env["CONTROL_PLANE_URL"] = self.url
             env["ONNX_PROVIDER"] = self.provider
+            # Plate-tracking tunables — worker reads these from env (see ai_worker_grpc.py)
+            for key, value in self.plate_settings.items():
+                env[key] = str(value)
 
             self.process = subprocess.Popen(
                 cmd,
@@ -104,6 +109,10 @@ class AIWorkerWindow(QMainWindow):
 
         self.url_value = os.getenv("CONTROL_PLANE_URL", "localhost:50051")
         self.provider_value = "CPUExecutionProvider"
+        # Plate-tracking defaults (mirror ai_worker_grpc.py)
+        self.min_plate_hits_value = 1
+        self.plate_track_timeout_value = 6.0
+        self.plate_track_max_duration_value = 12.0
         self._load_config()
 
         self.setup_ui()
@@ -116,6 +125,9 @@ class AIWorkerWindow(QMainWindow):
                     config = json.load(f)
                     self.url_value = config.get("url", self.url_value)
                     self.provider_value = config.get("provider", self.provider_value)
+                    self.min_plate_hits_value = config.get("min_plate_hits", self.min_plate_hits_value)
+                    self.plate_track_timeout_value = config.get("plate_track_timeout", self.plate_track_timeout_value)
+                    self.plate_track_max_duration_value = config.get("plate_track_max_duration", self.plate_track_max_duration_value)
             except Exception as e:
                 logging.error(f"Failed to load config: {e}")
 
@@ -124,7 +136,10 @@ class AIWorkerWindow(QMainWindow):
             with open(self.CONFIG_FILE, "w") as f:
                 json.dump({
                     "url": self.url_entry.text().strip(),
-                    "provider": self.provider_combo.currentText()
+                    "provider": self.provider_combo.currentText(),
+                    "min_plate_hits": self.min_plate_hits_spin.value(),
+                    "plate_track_timeout": self.plate_track_timeout_spin.value(),
+                    "plate_track_max_duration": self.plate_track_max_duration_spin.value(),
                 }, f, indent=4)
         except Exception as e:
             logging.error(f"Failed to save config: {e}")
@@ -201,6 +216,58 @@ class AIWorkerWindow(QMainWindow):
 
         main_layout.addLayout(form_layout)
 
+        # ── Plate Detection Tuning ──
+        plate_title = QLabel("🚗 Plate Detection")
+        plate_title.setFont(QFont("Helvetica", 13, QFont.Weight.Bold))
+        main_layout.addWidget(plate_title)
+
+        plate_form = QGridLayout()
+        plate_form.setColumnStretch(1, 1)
+        plate_form.setColumnStretch(3, 1)
+
+        # Min Plate Hits
+        hits_lbl = QLabel("Min Hits:")
+        hits_lbl.setFont(QFont("Helvetica", 13))
+        hits_lbl.setToolTip("Discard plate tracks seen in fewer frames than this. "
+                            "Lower = catch fast-passing plates, higher = fewer false positives.")
+        self.min_plate_hits_spin = QSpinBox()
+        self.min_plate_hits_spin.setFont(QFont("Helvetica", 13))
+        self.min_plate_hits_spin.setRange(1, 20)
+        self.min_plate_hits_spin.setValue(int(self.min_plate_hits_value))
+        self.min_plate_hits_spin.valueChanged.connect(self._save_config)
+
+        # Track Timeout
+        timeout_lbl = QLabel("Track Timeout (s):")
+        timeout_lbl.setFont(QFont("Helvetica", 13))
+        timeout_lbl.setToolTip("Seconds of inactivity before a plate track flushes. "
+                               "Wider window lets sparse detections of the same plate accumulate hits.")
+        self.plate_track_timeout_spin = QDoubleSpinBox()
+        self.plate_track_timeout_spin.setFont(QFont("Helvetica", 13))
+        self.plate_track_timeout_spin.setRange(0.5, 60.0)
+        self.plate_track_timeout_spin.setSingleStep(0.5)
+        self.plate_track_timeout_spin.setValue(float(self.plate_track_timeout_value))
+        self.plate_track_timeout_spin.valueChanged.connect(self._save_config)
+
+        # Max Duration
+        maxdur_lbl = QLabel("Max Duration (s):")
+        maxdur_lbl.setFont(QFont("Helvetica", 13))
+        maxdur_lbl.setToolTip("Maximum lifetime of a plate track before it is force-flushed.")
+        self.plate_track_max_duration_spin = QDoubleSpinBox()
+        self.plate_track_max_duration_spin.setFont(QFont("Helvetica", 13))
+        self.plate_track_max_duration_spin.setRange(1.0, 120.0)
+        self.plate_track_max_duration_spin.setSingleStep(1.0)
+        self.plate_track_max_duration_spin.setValue(float(self.plate_track_max_duration_value))
+        self.plate_track_max_duration_spin.valueChanged.connect(self._save_config)
+
+        plate_form.addWidget(hits_lbl, 0, 0)
+        plate_form.addWidget(self.min_plate_hits_spin, 0, 1)
+        plate_form.addWidget(timeout_lbl, 0, 2)
+        plate_form.addWidget(self.plate_track_timeout_spin, 0, 3)
+        plate_form.addWidget(maxdur_lbl, 1, 0)
+        plate_form.addWidget(self.plate_track_max_duration_spin, 1, 1)
+
+        main_layout.addLayout(plate_form)
+
         # ── Separator ──
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
@@ -258,8 +325,17 @@ class AIWorkerWindow(QMainWindow):
             logging.error("Control Plane URL cannot be empty.")
             return
 
+        plate_settings = {
+            "MIN_PLATE_HITS": self.min_plate_hits_spin.value(),
+            "PLATE_TRACK_TIMEOUT": self.plate_track_timeout_spin.value(),
+            "PLATE_TRACK_MAX_DURATION": self.plate_track_max_duration_spin.value(),
+        }
+
         self.url_entry.setEnabled(False)
         self.provider_combo.setEnabled(False)
+        self.min_plate_hits_spin.setEnabled(False)
+        self.plate_track_timeout_spin.setEnabled(False)
+        self.plate_track_max_duration_spin.setEnabled(False)
         self.start_btn.setText("🛑 Stop Worker")
         self.start_btn.setStyleSheet("""
             QPushButton {
@@ -274,7 +350,7 @@ class AIWorkerWindow(QMainWindow):
 
         self.is_running = True
         
-        self.worker_thread = WorkerThread(url, provider)
+        self.worker_thread = WorkerThread(url, provider, plate_settings)
         self.worker_thread.finished_signal.connect(self.on_worker_finished)
         self.worker_thread.error_signal.connect(self.on_worker_error)
         self.worker_thread.log_signal.connect(self.append_log)
@@ -302,6 +378,9 @@ class AIWorkerWindow(QMainWindow):
         """)
         self.url_entry.setEnabled(True)
         self.provider_combo.setEnabled(True)
+        self.min_plate_hits_spin.setEnabled(True)
+        self.plate_track_timeout_spin.setEnabled(True)
+        self.plate_track_max_duration_spin.setEnabled(True)
         logging.info("Worker thread completely stopped.")
 
     def on_worker_error(self, err_msg):

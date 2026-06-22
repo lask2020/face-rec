@@ -208,7 +208,7 @@ PLATE_TRACK_TIMEOUT = float(os.getenv("PLATE_TRACK_TIMEOUT", "6.0"))      # seco
 PLATE_TRACK_MAX_DURATION = float(os.getenv("PLATE_TRACK_MAX_DURATION", "12.0"))
 PLATE_COOLDOWN_DURATION = 10.0 # don't re-report same plate for 10 s
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
-MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "2"))  # discard single-frame detections
+MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
 
 
 def clean_cooldowns():
