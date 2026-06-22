@@ -91,8 +91,11 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	activeCameras[camID] = cancel
 
 	// Register the raw RTSP stream in go2rtc (used for live preview / WebRTC).
+	// The control plane stores URLs as wrapped go2rtc ffmpeg sources, which
+	// go2rtc's PUT /api/streams cannot ingest; rawRTSPSource unwraps them to a
+	// plain rtsp:// URL that registers cleanly (see helper for details).
 	streamName := fmt.Sprintf("cam_%d", camID)
-	if err := registerStream(streamName, rtspURL); err != nil {
+	if err := registerStream(streamName, rawRTSPSource(rtspURL)); err != nil {
 		log.Printf("[Camera %d] Failed to register in go2rtc: %v. Will retry on capture.", camID, err)
 	} else {
 		log.Printf("[Camera %d] Registered in go2rtc as '%s'", camID, streamName)
@@ -130,6 +133,28 @@ func handleStop(camID uint) {
 		delete(activeCameras, camID)
 		log.Printf("[Camera %d] Stream stopped.", camID)
 	}
+}
+
+// rawRTSPSource extracts a plain rtsp:// URL from the source string stored by
+// the control plane, which wraps it as a go2rtc ffmpeg source, e.g.
+//
+//	ffmpeg:rtsp://user:pass@host:554/camId=8&_sid=SID#video=h264#audio=copy#rtsp_transport=tcp
+//
+// go2rtc's PUT /api/streams cannot ingest that wrapped, multi-#-option form (it
+// fails serializing the src into its config YAML: "did not find expected key").
+// Registering the bare inner rtsp:// URL instead works, and lets go2rtc decode
+// the (HEVC) source straight to MJPEG for the transcode stream — avoiding a
+// wasteful HEVC->h264->MJPEG double hop. If the input isn't ffmpeg-wrapped it's
+// returned unchanged (minus surrounding whitespace).
+func rawRTSPSource(dbURL string) string {
+	s := strings.TrimSpace(dbURL)
+	s = strings.TrimPrefix(s, "ffmpeg:")
+	// Strip go2rtc source options (#video=..., #audio=..., #rtsp_transport=...).
+	// The rtsp URL itself contains no '#', so cutting at the first one is safe.
+	if i := strings.IndexByte(s, '#'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 // registerStream tells go2rtc to connect to an RTSP/RTMP source.
