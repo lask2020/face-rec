@@ -144,17 +144,22 @@ func registerStream(name, sourceURL string) error {
 func captureLoop(ctx context.Context, camID uint, streamName string, intervalMs int) {
 	log.Printf("[Camera %d] Starting snapshot capture every %dms from go2rtc stream '%s'", camID, intervalMs, streamName)
 
-	// Keep stream alive with a dummy consumer
-	go func() {
-		req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/api/stream.mp4?src=%s", go2rtcURL, streamName), nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			io.Copy(io.Discard, resp.Body)
-		}
-	}()
-	interval := time.Duration(intervalMs) * time.Millisecond
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Keep the go2rtc RTSP connection warm with a persistent consumer.
+	// This is what makes frame.jpeg return instantly from go2rtc's buffer — without
+	// it, every snapshot forces go2rtc to cold-start the RTSP pull, which is slow.
+	// The consumer MUST auto-reconnect: a single network blip would otherwise kill
+	// it permanently and every subsequent snapshot would lag.
+	go keepStreamWarm(ctx, camID, streamName)
+
+	// Use a Ticker so the interval is measured from the START of each cycle,
+	// not from after the fetch+push complete. This keeps FPS accurate regardless
+	// of how long the HTTP snapshot request takes.
+	ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
+	defer ticker.Stop()
+
+	// Snapshot timeout is kept tight (relative to the capture interval) so a single
+	// stalled fetch can't freeze this camera's loop for many seconds.
+	client := &http.Client{Timeout: 5 * time.Second}
 	snapshotURL := fmt.Sprintf("%s/api/frame.jpeg?src=%s", go2rtcURL, streamName)
 
 	for {
@@ -162,27 +167,53 @@ func captureLoop(ctx context.Context, camID uint, streamName string, intervalMs 
 		case <-ctx.Done():
 			log.Printf("[Camera %d] Capture stopped.", camID)
 			return
-		default:
+		case <-ticker.C:
 		}
 
 		frame, err := fetchSnapshot(client, snapshotURL)
 		if err != nil {
-			log.Printf("[Camera %d] Snapshot failed: %v. Retrying in 5s...", camID, err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
+			log.Printf("[Camera %d] Snapshot failed: %v", camID, err)
 			continue
 		}
 
-		pushToRedis(ctx, camID, frame)
+		// Always update live-preview for the UI
+		rdb.Set(ctx, fmt.Sprintf("camera:latest:%d", camID), frame, 10*time.Second)
 
-		// Sleep until next capture
+		pushFrameToAIQueue(ctx, camID, frame)
+	}
+}
+
+// keepStreamWarm holds a long-lived consumer on the go2rtc stream so the RTSP
+// source stays connected and decoded frames are always ready for snapshotting.
+// It reconnects automatically until the camera's context is cancelled.
+func keepStreamWarm(ctx context.Context, camID uint, streamName string) {
+	url := fmt.Sprintf("%s/api/stream.mp4?src=%s", go2rtcURL, streamName)
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(interval):
+		default:
+		}
+
+		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			// Stream not ready yet (or go2rtc restarting) — back off and retry.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			continue
+		}
+		// Drain until the connection drops, then loop to reconnect.
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(1 * time.Second):
 		}
 	}
 }
@@ -211,12 +242,15 @@ func fetchSnapshot(client *http.Client, url string) ([]byte, error) {
 	return data, nil
 }
 
-// pushToRedis sends the JPEG frame to the AI processing queue and live preview cache
-func pushToRedis(ctx context.Context, camID uint, frame []byte) {
-	// Push to Redis Stream for AI processing
+// pushFrameToAIQueue pushes a JPEG frame to the AI processing stream.
+// MaxLen with Approx bounds the queue and naturally drops the OLDEST entries when
+// full — exactly the right behavior for real-time: fresh frames always win, stale
+// ones are discarded. No producer-side length check is needed (and a producer-side
+// skip would wrongly drop the NEW frame while keeping stale ones).
+func pushFrameToAIQueue(ctx context.Context, camID uint, frame []byte) {
 	err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "image.queue",
-		MaxLen: 100,
+		MaxLen: 10, // small bound — keep the queue fresh, drop oldest under load
 		Approx: true,
 		Values: map[string]interface{}{
 			"camera_id": camID,
@@ -227,10 +261,8 @@ func pushToRedis(ctx context.Context, camID uint, frame []byte) {
 
 	if err != nil {
 		log.Printf("[Camera %d] Failed to push to Redis Stream: %v", camID, err)
+		return
 	}
-
-	// Update "Latest Frame" for live preview
-	rdb.Set(ctx, fmt.Sprintf("camera:latest:%d", camID), frame, 10*time.Second)
 
 	log.Printf("[Camera %d] Frame captured (%d bytes), pushed to Redis.", camID, len(frame))
 }
