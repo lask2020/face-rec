@@ -90,18 +90,31 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	ictx, cancel := context.WithCancel(ctx)
 	activeCameras[camID] = cancel
 
-	// Register stream in go2rtc first (using direct RTSP URL without ffmpeg wrapper)
+	// Register the raw RTSP stream in go2rtc (used for live preview / WebRTC).
 	streamName := fmt.Sprintf("cam_%d", camID)
-	streamSource := rtspURL
-	if err := registerStream(streamName, streamSource); err != nil {
+	if err := registerStream(streamName, rtspURL); err != nil {
 		log.Printf("[Camera %d] Failed to register in go2rtc: %v. Will retry on capture.", camID, err)
 	} else {
-		log.Printf("[Camera %d] Registered in go2rtc as '%s' (Keyframe only)", camID, streamName)
+		log.Printf("[Camera %d] Registered in go2rtc as '%s'", camID, streamName)
+	}
+
+	// Register a SECOND stream that transcodes to MJPEG via ffmpeg. The cameras
+	// are H265+ (HEVC), which go2rtc cannot turn into JPEG natively — stream.mjpeg
+	// on the raw stream returns an empty body. Transcoding once, continuously, with
+	// ffmpeg is far cheaper than decoding per-snapshot and never freezes go2rtc.
+	// We cap the transcode framerate to the configured fps so ffmpeg doesn't waste
+	// CPU encoding frames we'd throttle away anyway.
+	mjpegName := fmt.Sprintf("cam_%d_mjpeg", camID)
+	mjpegSource := fmt.Sprintf("ffmpeg:%s#video=mjpeg#raw=-r %d", streamName, fps)
+	if err := registerStream(mjpegName, mjpegSource); err != nil {
+		log.Printf("[Camera %d] Failed to register MJPEG transcode stream: %v", camID, err)
+	} else {
+		log.Printf("[Camera %d] Registered MJPEG transcode stream '%s' (%d fps)", camID, mjpegName, fps)
 	}
 
 	// Convert FPS to millisecond interval (e.g. 3 fps -> 333ms)
 	intervalMs := 1000 / fps
-	go captureLoop(ictx, camID, streamName, intervalMs)
+	go captureLoop(ictx, camID, mjpegName, intervalMs)
 }
 
 func handleStop(camID uint) {
@@ -191,12 +204,14 @@ func streamMJPEG(parentCtx context.Context, camID uint, url string, minInterval 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("go2rtc returned %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("go2rtc returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	mediaType, params, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
-		return fmt.Errorf("not a multipart stream: %q", resp.Header.Get("Content-Type"))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("not multipart (ct=%q status=%d body=%q)", resp.Header.Get("Content-Type"), resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	mr := multipart.NewReader(resp.Body, params["boundary"])
 
