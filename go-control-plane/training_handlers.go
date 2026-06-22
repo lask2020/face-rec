@@ -405,7 +405,7 @@ func exportTrainingZip(c *fiber.Ctx) error {
 		valSplit = v
 	}
 
-	query := DB.Model(&PlateTrainingSample{}).Where("image_path != ''")
+	query := DB.Model(&PlateTrainingSample{})
 	if statusFilter != "" {
 		query = query.Where("status = ?", statusFilter)
 	}
@@ -417,10 +417,6 @@ func exportTrainingZip(c *fiber.Ctx) error {
 
 	var samples []PlateTrainingSample
 	query.Find(&samples)
-
-	if len(samples) == 0 {
-		return c.Status(404).JSON(fiber.Map{"error": "no samples found"})
-	}
 
 	// Shuffle and split train/val
 	rand.Shuffle(len(samples), func(i, j int) { samples[i], samples[j] = samples[j], samples[i] })
@@ -436,10 +432,14 @@ func exportTrainingZip(c *fiber.Ctx) error {
 
 	writeSplit := func(splitName string, set []PlateTrainingSample) {
 		for i, s := range set {
+			labelLines := buildYoloLabel(s)
+			if labelLines == "" {
+				continue // skip samples with no usable labels
+			}
 			stem := fmt.Sprintf("%s_%05d", splitName, i)
 
 			// Fetch image from S3 using raw ImagePath (S3 key, not the URL)
-			if S3Client != nil {
+			if S3Client != nil && s.ImagePath != "" {
 				obj, err := S3Client.GetObject(context.Background(), SnapshotsBucket, s.ImagePath, minio.GetObjectOptions{})
 				if err == nil {
 					imgBuf := new(bytes.Buffer)
@@ -452,12 +452,8 @@ func exportTrainingZip(c *fiber.Ctx) error {
 				}
 			}
 
-			// Build YOLO label from char_labels JSON
-			labelLines := buildYoloLabel(s)
-			if labelLines != "" {
-				fw, _ := zw.Create(fmt.Sprintf("dataset/%s/labels/%s.txt", splitName, stem))
-				fw.Write([]byte(labelLines))
-			}
+			fw, _ := zw.Create(fmt.Sprintf("dataset/%s/labels/%s.txt", splitName, stem))
+			fw.Write([]byte(labelLines))
 		}
 	}
 
@@ -476,9 +472,15 @@ func exportTrainingZip(c *fiber.Ctx) error {
 	fw, _ := zw.Create("dataset/data.yaml")
 	fw.Write([]byte(yamlContent))
 
+	withImage := 0
+	for _, s := range samples {
+		if s.ImagePath != "" {
+			withImage++
+		}
+	}
 	readmeContent := fmt.Sprintf(
-		"# Thai License Plate Training Dataset\n\nGenerated: %s\nTrain: %d samples\nValid: %d samples\nClasses: %d\n",
-		time.Now().Format(time.RFC3339), len(trainSamples), len(valSamples), len(masterClasses),
+		"# Thai License Plate Training Dataset\n\nGenerated: %s\nTotal: %d samples (%d with images)\nTrain: %d  Valid: %d\nClasses: %d\n",
+		time.Now().Format(time.RFC3339), len(samples), withImage, len(trainSamples), len(valSamples), len(masterClasses),
 	)
 	fw2, _ := zw.Create("dataset/README.md")
 	fw2.Write([]byte(readmeContent))
@@ -494,7 +496,7 @@ func getExportPreview(c *fiber.Ctx) error {
 	statusFilter := c.Query("status", "approved")
 	confMaxStr := c.Query("conf_max", "")
 
-	query := DB.Model(&PlateTrainingSample{}).Where("image_path != ''")
+	query := DB.Model(&PlateTrainingSample{})
 	if statusFilter != "" {
 		query = query.Where("status = ?", statusFilter)
 	}
