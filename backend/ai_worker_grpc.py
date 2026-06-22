@@ -252,9 +252,9 @@ def add_plate_cooldown(plate_number: str):
 
 def flush_plate_track(track: PlateTrack, send_queue):
     if track.hit_count < MIN_PLATE_HITS:
-        logger.debug(
+        logger.info(
             f"Discarding plate track for camera {track.camera_id} "
-            f"(hits={track.hit_count} < {MIN_PLATE_HITS}) — single-frame detection"
+            f"(hits={track.hit_count} < {MIN_PLATE_HITS}) — single-frame detection  raw='{track.best.raw_text}'"
         )
         return
 
@@ -262,7 +262,7 @@ def flush_plate_track(track: PlateTrack, send_queue):
     label = pr.plate_number or pr.raw_text or "?"
 
     if pr.plate_number and is_plate_on_cooldown(pr.plate_number):
-        logger.debug(f"Plate {pr.plate_number} on cooldown — skipping flush")
+        logger.info(f"Plate {pr.plate_number} on cooldown — skipping flush")
         return
 
     logger.info(
@@ -469,16 +469,18 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
             now_time = time.time()
             with cameras_lock:
                 if camera_id not in last_seen_camera:
-                    logger.info(f"Started processing stream for Camera {camera_id}")
+                    logger.info(f"Started processing stream for Camera {camera_id} (detect_mode='{detect_mode}')")
                 last_seen_camera[camera_id] = now_time
 
             faces = []
 
             # Run plate detection when mode is "plate" or "both"
+            if detect_mode not in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
+                logger.debug(f"Camera {camera_id}: skipping plate detection (detect_mode='{detect_mode}')")
             if detect_mode in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
                 plate_results: list[PlateResult] = license_plate_engine.detect(img)
                 if plate_results:
-                    logger.debug(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame")
+                    logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame raw={[p.raw_text for p in plate_results]}")
                 with plate_tracks_lock:
                     for pr in plate_results:
                         matched_pt = None
