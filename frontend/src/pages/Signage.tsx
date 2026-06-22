@@ -9,9 +9,15 @@ interface SignageProps {
 interface SignageCard extends DetectionEvent {
   uniqueId: string;
   accentIndex: number;
+  initX: number;
+  initY: number;
+  dx1: number; dy1: number;
+  dx2: number; dy2: number;
+  dx3: number; dy3: number;
 }
 
-const CARD_LIFETIME_MS = 15000;
+const CARD_LIFETIME_MS  = 30000;
+const CARD_LIFETIME_CSS = `${CARD_LIFETIME_MS / 1000}s`;
 const MAX_PROCESSED_SIGS = 200;
 
 const ACCENTS = [
@@ -22,6 +28,14 @@ const ACCENTS = [
   { border: '#34d399', glow: 'rgba(52,211,153,0.35)',  bg: 'rgba(52,211,153,0.07)'  },
   { border: '#fb923c', glow: 'rgba(251,146,60,0.35)',  bg: 'rgba(251,146,60,0.07)'  },
 ];
+
+function rand(min: number, max: number) {
+  return min + Math.random() * (max - min);
+}
+
+function drift() {
+  return (Math.random() - 0.5) * 70;
+}
 
 export default function Signage({ events }: SignageProps) {
   const [cards, setCards] = useState<SignageCard[]>([]);
@@ -40,9 +54,18 @@ export default function Signage({ events }: SignageProps) {
       const sig = `${event.timestamp}-${event.person_id ?? 'unknown'}-${event.camera_id}`;
       if (!processedSet.current.has(sig) && event.person_name && event.person_name !== 'Unknown') {
         processedSet.current.add(sig);
-        const eventTime = new Date(event.timestamp).getTime();
-        if (Date.now() - eventTime < CARD_LIFETIME_MS) {
-          newCards.push({ ...event, uniqueId: sig, accentIndex: accentCounter.current++ % ACCENTS.length });
+        if (Date.now() - new Date(event.timestamp).getTime() < CARD_LIFETIME_MS) {
+          newCards.push({
+            ...event,
+            uniqueId: sig,
+            accentIndex: accentCounter.current++ % ACCENTS.length,
+            // Spawn position: spread across cards area, keeping card fully visible
+            initX: rand(2, 62),
+            initY: rand(2, 72),
+            dx1: drift(), dy1: drift(),
+            dx2: drift(), dy2: drift(),
+            dx3: drift(), dy3: drift(),
+          });
         }
       }
     });
@@ -132,6 +155,12 @@ export default function Signage({ events }: SignageProps) {
                 '--accent-border': accent.border,
                 '--accent-glow':   accent.glow,
                 '--accent-bg':     accent.bg,
+                '--dx1': `${card.dx1}px`, '--dy1': `${card.dy1}px`,
+                '--dx2': `${card.dx2}px`, '--dy2': `${card.dy2}px`,
+                '--dx3': `${card.dx3}px`, '--dy3': `${card.dy3}px`,
+                '--lifetime': CARD_LIFETIME_CSS,
+                left: `${card.initX}%`,
+                top:  `${card.initY}%`,
               } as React.CSSProperties}
             >
               <div className="card-face-wrapper">

@@ -175,17 +175,13 @@
   position: relative;
   flex: 1;
   z-index: 5;
-  padding: 2.25rem 3rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.25rem;
-  align-content: flex-start;
   overflow: hidden;
 }
 
-/* ── Single card ──────────────────────────────────────────────────────────── */
+/* ── Single card — absolute, drifts along randomised waypoints ────────────── */
 
 .signage-card {
+  position: absolute;
   width: 330px;
   background: rgba(15, 23, 42, 0.6);
   backdrop-filter: blur(20px) saturate(1.3);
@@ -202,14 +198,17 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
   background-image: linear-gradient(135deg, var(--accent-bg), transparent 55%);
   overflow: hidden;
-  animation: cardSlideIn 15s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  /* Duration driven by --lifetime so JS and CSS stay in sync */
+  animation: cardFloat var(--lifetime, 30s) ease-in-out forwards;
 }
 
-@keyframes cardSlideIn {
-  0%   { opacity: 0; transform: translateX(60px) scale(0.92); }
-  6%   { opacity: 1; transform: translateX(0) scale(1); }
-  84%  { opacity: 1; transform: translateX(0) scale(1); }
-  100% { opacity: 0; transform: translateX(-16px) scale(0.97); }
+@keyframes cardFloat {
+  0%   { opacity: 0;   transform: translate(0px, 28px) scale(0.88); }
+  7%   { opacity: 1;   transform: translate(0px, 0px)  scale(1); }
+  28%  { opacity: 1;   transform: translate(var(--dx1), var(--dy1)) scale(1.01); }
+  55%  { opacity: 1;   transform: translate(var(--dx2), var(--dy2)) scale(0.99); }
+  82%  { opacity: 1;   transform: translate(var(--dx3), var(--dy3)) scale(1); }
+  100% { opacity: 0;   transform: translate(var(--dx3), calc(var(--dy3) - 20px)) scale(0.94); }
 }
 
 /* ── Face image ───────────────────────────────────────────────────────────── */
@@ -281,7 +280,7 @@
   background: linear-gradient(90deg, var(--accent-border), color-mix(in srgb, var(--accent-border) 60%, transparent));
   border-radius: 999px;
   box-shadow: 0 0 8px var(--accent-border);
-  animation: progressDrain 15s linear forwards;
+  animation: progressDrain var(--lifetime, 30s) linear forwards;
 }
 
 @keyframes progressDrain {
