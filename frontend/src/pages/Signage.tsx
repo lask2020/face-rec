@@ -11,6 +11,10 @@ interface SignageCard extends DetectionEvent {
 }
 
 const CARD_LIFETIME_MS = 15000; // 15 seconds
+// Cap the dedup set so a long-running wall display doesn't leak memory.
+// Safe because useWebSocket keeps at most 100 events, so anything still
+// reachable is well within the most recent entries.
+const MAX_PROCESSED_SIGS = 200;
 
 export default function Signage({ events }: SignageProps) {
   const [cards, setCards] = useState<SignageCard[]>([]);
@@ -60,6 +64,15 @@ export default function Signage({ events }: SignageProps) {
           return now - cardTime < CARD_LIFETIME_MS;
         });
       });
+
+      // Prune the dedup set so it never grows unbounded. Set preserves
+      // insertion order, so keep only the most recent signatures.
+      const seen = processedSet.current;
+      if (seen.size > MAX_PROCESSED_SIGS) {
+        processedSet.current = new Set(
+          [...seen].slice(seen.size - MAX_PROCESSED_SIGS)
+        );
+      }
     }, 1000);
     return () => clearInterval(interval);
   }, []);

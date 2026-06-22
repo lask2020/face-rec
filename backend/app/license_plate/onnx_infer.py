@@ -133,7 +133,13 @@ class YoloOnnxSession:
         blob = cv2.cvtColor(img_lb, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         blob = blob.transpose(2, 0, 1)[np.newaxis]          # 1CHW
 
-        raw = self.session.run(None, {self.inp_name: blob})[0]  # (1, *, *)
+        # Serialize GPU access with the rest of the process (face engine /
+        # restorer). DirectML can crash or corrupt memory under concurrent
+        # session.run() calls — onnx_infer is the plate-detection path that
+        # was previously bypassing this lock.
+        from app.gpu_lock import inference_lock
+        with inference_lock:
+            raw = self.session.run(None, {self.inp_name: blob})[0]  # (1, *, *)
 
         if self.is_post_nms:
             return self._decode_post_nms(raw[0], conf_thresh, orig_w, orig_h, ratio, pad_w, pad_h)

@@ -121,12 +121,69 @@ class FaceTrack:
         self.last_seen = time.time()
 
 
+class PlateTrack:
+    """Tracks a license plate bbox across frames and keeps the best OCR result."""
+
+    def __init__(self, camera_id: int, plate_result: PlateResult, task_id: str):
+        self.camera_id  = camera_id
+        self.track_id   = str(uuid.uuid4())
+        self.best       = plate_result
+        # Most recent bbox — used for spatial (IoU) matching. Kept separate
+        # from best.bbox because a moving plate shifts position every frame
+        # while best stays frozen on the best-OCR frame.
+        self.last_bbox  = plate_result.bbox
+        self.task_id    = task_id
+        self.hit_count  = 1
+        self.first_seen = time.time()
+        self.last_seen  = time.time()
+
+    def update(self, plate_result: PlateResult, task_id: str):
+        """
+        Keep the best OCR result:
+          1. Valid plate_number beats no plate_number.
+          2. Among equals, higher confidence wins.
+        """
+        current_valid = self.best.plate_number is not None
+        new_valid     = plate_result.plate_number is not None
+
+        if new_valid and not current_valid:
+            self.best    = plate_result
+            self.task_id = task_id
+        elif new_valid == current_valid and plate_result.confidence > self.best.confidence:
+            self.best    = plate_result
+            self.task_id = task_id
+
+        # Follow the plate's current position regardless of OCR quality.
+        self.last_bbox = plate_result.bbox
+        self.last_seen = time.time()
+        self.hit_count += 1
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    """Intersection-over-Union for two [x1,y1,x2,y2] boxes."""
+    ix1 = max(a[0], b[0])
+    iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2])
+    iy2 = min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    return inter / (area_a + area_b - inter + 1e-6)
+
+
 # Active tracks and cooldown state
 active_tracks = {}
 tracks_lock = threading.Lock()
 
 cooldowns = []
 cooldowns_lock = threading.Lock()
+
+# Plate tracks
+active_plate_tracks: dict[str, "PlateTrack"] = {}
+plate_tracks_lock = threading.Lock()
+
+plate_cooldowns: dict[str, float] = {}  # plate_number -> expires_at
+plate_cooldowns_lock = threading.Lock()
 
 # Camera state and logs suppression
 last_seen_camera = {}
@@ -139,6 +196,12 @@ recent_process_times = []
 TRACK_TIMEOUT = 3.0  # seconds of inactivity before flushing
 TRACK_MAX_DURATION = 5.0  # max seconds a track can run before flushing
 COOLDOWN_DURATION = 30.0  # seconds
+
+PLATE_TRACK_TIMEOUT = 2.0      # seconds of inactivity before flushing
+PLATE_TRACK_MAX_DURATION = 4.0
+PLATE_COOLDOWN_DURATION = 10.0 # don't re-report same plate for 10 s
+PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
+MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "2"))  # discard single-frame detections
 
 
 def clean_cooldowns():
@@ -165,6 +228,63 @@ def add_cooldown(embedding):
             "embedding": embedding,
             "expires_at": time.time() + COOLDOWN_DURATION
         })
+
+
+def clean_plate_cooldowns():
+    now = time.time()
+    with plate_cooldowns_lock:
+        expired = [k for k, exp in plate_cooldowns.items() if exp <= now]
+        for k in expired:
+            del plate_cooldowns[k]
+
+
+def is_plate_on_cooldown(plate_number: str) -> bool:
+    now = time.time()
+    with plate_cooldowns_lock:
+        exp = plate_cooldowns.get(plate_number)
+        return exp is not None and exp > now
+
+
+def add_plate_cooldown(plate_number: str):
+    with plate_cooldowns_lock:
+        plate_cooldowns[plate_number] = time.time() + PLATE_COOLDOWN_DURATION
+
+
+def flush_plate_track(track: PlateTrack, send_queue):
+    if track.hit_count < MIN_PLATE_HITS:
+        logger.debug(
+            f"Discarding plate track for camera {track.camera_id} "
+            f"(hits={track.hit_count} < {MIN_PLATE_HITS}) — single-frame detection"
+        )
+        return
+
+    pr = track.best
+    label = pr.plate_number or pr.raw_text or "?"
+
+    if pr.plate_number and is_plate_on_cooldown(pr.plate_number):
+        logger.debug(f"Plate {pr.plate_number} on cooldown — skipping flush")
+        return
+
+    logger.info(
+        f"Flushing plate track for camera {track.camera_id}: "
+        f"{label}  conf={pr.confidence:.2f}  hits={track.hit_count}"
+    )
+
+    if pr.plate_number:
+        add_plate_cooldown(pr.plate_number)
+
+    send_queue.put(facerec_pb2.InferenceResult(
+        task_id=track.task_id,
+        detections=[],
+        plate_detections=[facerec_pb2.PlateDetection(
+            bbox=pr.bbox,
+            plate_number=pr.plate_number or "",
+            confidence=pr.confidence,
+            plate_type=pr.plate_type,
+            province=pr.province or "",
+            raw_text=pr.raw_text,
+        )],
+    ))
 
 
 def flush_track(track, send_queue):
@@ -259,9 +379,23 @@ def track_flusher(send_queue, stop_event=None):
                         if (now - track.last_seen > TRACK_TIMEOUT) or (now - track.first_seen > TRACK_MAX_DURATION):
                             to_flush.append(track)
                             del active_tracks[key]
-                            
+
                 for track in to_flush:
                     executor.submit(flush_track, track, send_queue)
+
+                # Flush expired plate tracks
+                to_flush_plates = []
+                with plate_tracks_lock:
+                    for key in list(active_plate_tracks.keys()):
+                        pt = active_plate_tracks[key]
+                        if (now - pt.last_seen > PLATE_TRACK_TIMEOUT) or (now - pt.first_seen > PLATE_TRACK_MAX_DURATION):
+                            to_flush_plates.append(pt)
+                            del active_plate_tracks[key]
+
+                for pt in to_flush_plates:
+                    executor.submit(flush_plate_track, pt, send_queue)
+
+                clean_plate_cooldowns()
 
                 # Periodically send metrics update (every 2 seconds)
                 if now - last_stats_sent > 2.0:
@@ -338,23 +472,25 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
                     logger.info(f"Started processing stream for Camera {camera_id}")
                 last_seen_camera[camera_id] = now_time
 
-            plate_proto_list = []
             faces = []
 
             # Run plate detection when mode is "plate" or "both"
             if detect_mode in ("plate", "both") and license_plate_engine.ready:
                 plate_results: list[PlateResult] = license_plate_engine.detect(img)
-                for pr in plate_results:
-                    plate_proto_list.append(facerec_pb2.PlateDetection(
-                        bbox=pr.bbox,
-                        plate_number=pr.plate_number or "",
-                        confidence=pr.confidence,
-                        plate_type=pr.plate_type,
-                        province=pr.province or "",
-                        raw_text=pr.raw_text,
-                    ))
                 if plate_results:
-                    logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s)")
+                    logger.debug(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame")
+                with plate_tracks_lock:
+                    for pr in plate_results:
+                        matched_pt = None
+                        for pt in active_plate_tracks.values():
+                            if pt.camera_id == camera_id and _iou(pt.last_bbox, pr.bbox) >= PLATE_IOU_THRESH:
+                                matched_pt = pt
+                                break
+                        if matched_pt:
+                            matched_pt.update(pr, task_id)
+                        else:
+                            new_pt = PlateTrack(camera_id, pr, task_id)
+                            active_plate_tracks[new_pt.track_id] = new_pt
 
             # Run face detection when mode is "face" or "both"
             if detect_mode in ("face", "both"):
@@ -369,15 +505,8 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
                 if len(recent_process_times) > 50:
                     recent_process_times.pop(0)
 
-            # If only plate mode and we got results, send immediately
+            # Plate-only mode: no face tracks to manage, just return
             if detect_mode == "plate":
-                if plate_proto_list:
-                    send_queue.put(facerec_pb2.InferenceResult(
-                        task_id=task_id,
-                        detections=[],
-                        plate_detections=plate_proto_list,
-                        process_time_ms=duration_ms,
-                    ))
                 return
 
             with tracks_lock:
@@ -406,17 +535,6 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
                         # Create new track
                         new_track = FaceTrack(camera_id, bbox, emb, task_id, image_data, sharpness, frontality, face.kps)
                         active_tracks[new_track.track_id] = new_track
-
-            # Attach plate detections to flush result (for "both" mode)
-            if plate_proto_list:
-                # Store for later use by flush_track via a thread-local or attach to track
-                # For simplicity, send a separate result message now
-                send_queue.put(facerec_pb2.InferenceResult(
-                    task_id=task_id,
-                    detections=[],
-                    plate_detections=plate_proto_list,
-                    process_time_ms=duration_ms,
-                ))
                         
     except Exception as ex:
         logger.error(f"Error processing task {task_id}: {ex}")
@@ -465,6 +583,8 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
 
         with tracks_lock:
             active_tracks.clear()
+        with plate_tracks_lock:
+            active_plate_tracks.clear()
         with cameras_lock:
             last_seen_camera.clear()
 
