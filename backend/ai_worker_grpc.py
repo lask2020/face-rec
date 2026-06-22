@@ -216,6 +216,8 @@ PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across fr
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
 # Frames with confidence below this threshold are saved as training candidates
 TRAINING_CAPTURE_CONF_MAX = float(os.getenv("TRAINING_CAPTURE_CONF_MAX", "0.65"))
+# Max frames per track to send as training candidates (pick lowest-confidence ones)
+TRAINING_MAX_FRAMES_PER_TRACK = int(os.getenv("TRAINING_MAX_FRAMES_PER_TRACK", "3"))
 
 
 def clean_cooldowns():
@@ -432,16 +434,21 @@ def flush_plate_track(track: PlateTrack, send_queue):
             for c in chars
         ], ensure_ascii=False)
 
-    # Collect low-confidence frames as training candidates
-    training_frames = []
-    for fr in track.frame_results:
-        if fr.confidence < TRAINING_CAPTURE_CONF_MAX and fr.chars and fr.crop_bytes:
-            training_frames.append(facerec_pb2.PlateTrainingFrame(
-                crop_jpeg=fr.crop_bytes,
-                char_labels_json=_char_labels_json(fr.chars),
-                confidence=fr.confidence,
-                raw_text=fr.raw_text,
-            ))
+    # Collect low-confidence frames as training candidates (cap at N lowest-conf)
+    candidates = [
+        fr for fr in track.frame_results
+        if fr.confidence < TRAINING_CAPTURE_CONF_MAX and fr.chars and fr.crop_bytes
+    ]
+    candidates.sort(key=lambda fr: fr.confidence)
+    training_frames = [
+        facerec_pb2.PlateTrainingFrame(
+            crop_jpeg=fr.crop_bytes,
+            char_labels_json=_char_labels_json(fr.chars),
+            confidence=fr.confidence,
+            raw_text=fr.raw_text,
+        )
+        for fr in candidates[:TRAINING_MAX_FRAMES_PER_TRACK]
+    ]
 
     send_queue.put(facerec_pb2.InferenceResult(
         task_id=track.task_id,

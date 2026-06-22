@@ -4,15 +4,6 @@ import type { TrainingSample, TrainingStats, CharLabel } from '../api/client';
 
 const LIMIT = 20;
 
-// Thai char classes drawn from MASTER_CLASSES (digits + chars + provinces)
-const CHAR_CLASSES = [
-  '0','1','2','3','4','5','6','7','8','9',
-  'ก','ข','ค','ง','จ','ฉ','ช','ซ','ญ','ด',
-  'ต','ถ','ท','ธ','น','บ','ป','ผ','พ','ฝ',
-  'ฟ','ภ','ม','ย','ร','ล','ว','ศ','ษ','ส',
-  'ห','อ','ฮ','ฬ',
-];
-
 function parsedLabels(raw: string): CharLabel[] {
   try { return JSON.parse(raw) as CharLabel[]; } catch { return []; }
 }
@@ -27,7 +18,6 @@ interface PlateCanvasProps {
 
 function PlateCanvas({ imageUrl, labels, onCharClick }: PlateCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [imgNatural, setImgNatural] = useState<[number, number]>([0, 0]);
   const [displaySize, setDisplaySize] = useState<[number, number]>([240, 80]);
 
   useEffect(() => {
@@ -35,7 +25,6 @@ function PlateCanvas({ imageUrl, labels, onCharClick }: PlateCanvasProps) {
     img.onload = () => {
       const maxW = 300;
       const scale = maxW / img.naturalWidth;
-      setImgNatural([img.naturalWidth, img.naturalHeight]);
       setDisplaySize([maxW, Math.round(img.naturalHeight * scale)]);
     };
     img.src = imageUrl;

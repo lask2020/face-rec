@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -18,11 +19,115 @@ import (
 	facerec "github.com/face-rec/go-control-plane/facerec"
 )
 
+// ── Thai char ↔ code-name mapping ─────────────────────────────────────────────
+// Reverse of engine.py CHAR_LABEL_MAP: Thai unicode / province name → MASTER_CLASSES code.
+
+var thaiToCode = map[string]string{
+	// Thai consonants
+	"ก": "A01", "ข": "A02", "ค": "A04", "ฆ": "A06",
+	"ง": "A07", "จ": "A08", "ฉ": "A09", "ช": "A10",
+	"ซ": "A11", "ฌ": "A12", "ญ": "A13", "ฎ": "A14",
+	"ฏ": "A15", "ฐ": "A16", "ฑ": "A17", "ฒ": "A18",
+	"ณ": "A19", "ด": "A20", "ต": "A21", "ถ": "A22",
+	"ท": "A23", "ธ": "A24", "น": "A25", "บ": "A26",
+	"ป": "A27", "ผ": "A28", "ฝ": "A29", "พ": "A30",
+	"ฟ": "A31", "ภ": "A32", "ม": "A33", "ย": "A34",
+	"ร": "A35", "ล": "A36", "ว": "A37", "ศ": "A38",
+	"ษ": "A39", "ส": "A40", "ห": "A41", "ฬ": "A42",
+	"อ": "A43", "ฮ": "A44",
+	// Province Thai names → codes
+	"อ่างทอง": "ATG", "อยุธยา": "AYA",
+	"กรุงเทพ": "BKK", "บึงกาฬ": "BKN", "บุรีรัมย์": "BRM",
+	"ชลบุรี": "CBI", "ฉะเชิงเทรา": "CCO", "เชียงใหม่": "CMI",
+	"ชัยนาท": "CNT", "ชัยภูมิ": "CPM", "ชุมพร": "CPN",
+	"เชียงราย": "CRI", "จันทบุรี": "CTI",
+	"กระบี่": "KBI", "ขอนแก่น": "KKN", "กาฬสินธุ์": "KSN",
+	"กาญจนบุรี": "KRI", "กำแพงเพชร": "KPT",
+	"เลย": "LEI", "ลำปาง": "LPG", "ลำพูน": "LPN", "ลพบุรี": "LRI",
+	"มหาสารคาม": "MDH", "มุกดาหาร": "MKM",
+	"น่าน": "NAN", "หนองบัวลำภู": "NBI", "นนทบุรี": "NBP",
+	"หนองคาย": "NKI", "นครราชสีมา": "NMA", "นครปฐม": "NPM",
+	"นครพนม": "NPT", "นราธิวาส": "NRT", "นครสวรรค์": "NSN",
+	"นครศรีธรรมราช": "NST", "นครนายก": "NWT",
+	"ปราจีนบุรี": "PBI", "ประจวบคีรีขันธ์": "PCT", "ประจวบฯ": "PKN",
+	"ภูเก็ต": "PKT", "พัทลุง": "PLG", "พิษณุโลก": "PLK",
+	"พังงา": "PNA", "เพชรบูรณ์": "PNB", "เพชรบุรี": "PTE",
+	"แพร่": "PRE", "ปทุมธานี": "PRI", "ปัตตานี": "PTN",
+	"พะเยา": "PYO",
+	"ราชบุรี": "RBR", "ร้อยเอ็ด": "RET", "ระนอง": "RNG", "ระยอง": "RYG",
+	"สระบุรี": "SBR", "สงขลา": "SKA", "สกลนคร": "SKM",
+	"สมุทรสาคร": "SKN", "สมุทรสงคราม": "SKW",
+	"สิงห์บุรี": "SNI", "สกลนคร2": "SNK",
+	"สุพรรณบุรี": "SPB", "สมุทรปราการ": "SPK",
+	"สุรินทร์": "SRI", "สุราษฎร์ธานี": "SRN",
+	"ศรีสะเกษ": "SSK", "สตูล": "STI", "สุโขทัย": "STN",
+	"ตาก": "TAK", "ตรัง": "TRG", "ตราด": "TRT",
+	"อุบลราชธานี": "UBN", "อุดรธานี": "UDN",
+	"อุทัยธานี": "UTI", "อุตรดิตถ์": "UTT",
+	"ยะลา": "YLA", "ยโสธร": "YST",
+}
+
+// normalizeToCode converts a Thai unicode char or province name to its MASTER_CLASSES code.
+// Digits and already-valid codes pass through unchanged.
+func normalizeToCode(name string) string {
+	if _, ok := classIndex[name]; ok {
+		return name // already a valid code or digit
+	}
+	if code, ok := thaiToCode[name]; ok {
+		return code
+	}
+	return name // unknown — keep as-is and let classIndex miss it
+}
+
+// ── Dedup cache ───────────────────────────────────────────────────────────────
+// Prevents saving duplicate training samples for the same plate on the same camera
+// within a short time window.
+
+const trainingDedupWindow = 5 * time.Minute
+
+var (
+	trainingDedupCache   = make(map[string]time.Time)
+	trainingDedupCacheMu sync.Mutex
+)
+
+func trainingDedupKey(cameraID uint, rawText string) string {
+	return fmt.Sprintf("%d|%s", cameraID, rawText)
+}
+
+func claimTrainingSlot(cameraID uint, rawText string) bool {
+	key := trainingDedupKey(cameraID, rawText)
+	now := time.Now()
+	trainingDedupCacheMu.Lock()
+	defer trainingDedupCacheMu.Unlock()
+	if exp, ok := trainingDedupCache[key]; ok && now.Before(exp) {
+		return false
+	}
+	trainingDedupCache[key] = now.Add(trainingDedupWindow)
+	// Opportunistically evict expired entries to keep map small
+	for k, exp := range trainingDedupCache {
+		if now.After(exp) {
+			delete(trainingDedupCache, k)
+		}
+	}
+	return true
+}
+
 // ── S3 Save ───────────────────────────────────────────────────────────────────
 
 func saveTrainingFrames(ctx context.Context, frames []*facerec.PlateTrainingFrame, task PendingTask) {
+	if len(frames) == 0 {
+		return
+	}
+
 	var cam Camera
 	DB.First(&cam, task.CameraID)
+
+	// Use raw_text of first frame for dedup key (all frames in a track share the same plate)
+	rawText := frames[0].RawText
+	if !claimTrainingSlot(task.CameraID, rawText) {
+		log.Printf("[Training] Skipping duplicate training sample cam=%d raw=%q", task.CameraID, rawText)
+		return
+	}
 
 	for idx, frame := range frames {
 		if len(frame.CropJpeg) == 0 {
@@ -188,21 +293,23 @@ func getTrainingStats(c *fiber.Ctx) error {
 		ClassName string `json:"class_name"`
 		Count     int64  `json:"count"`
 	}
-	// Count per class from approved samples using JSON unnesting (simple approach)
+	// Fix: select both columns so the raw_text fallback actually works
 	var approvedSamples []PlateTrainingSample
-	DB.Where("status = 'approved'").Select("corrected_text").Find(&approvedSamples)
+	DB.Where("status = 'approved'").Select("corrected_text, raw_text").Find(&approvedSamples)
 	classCounts := map[string]int64{}
 	for _, s := range approvedSamples {
 		text := s.CorrectedText
 		if text == "" {
 			text = s.RawText
 		}
-		// Each rune = one char class
 		for _, ch := range text {
 			key := string(ch)
-			if key != " " && key != "-" {
-				classCounts[key]++
+			if key == " " || key == "-" {
+				continue
 			}
+			// Normalize to code name so stats match MASTER_CLASSES
+			code := normalizeToCode(key)
+			classCounts[code]++
 		}
 	}
 
@@ -215,8 +322,8 @@ func getTrainingStats(c *fiber.Ctx) error {
 	DB.Model(&PlateTrainingSample{}).Where("status = 'pending'").Count(&totalPending)
 
 	return c.JSON(fiber.Map{
-		"by_status":    byStat,
-		"by_class":     classStats,
+		"by_status":     byStat,
+		"by_class":      classStats,
 		"total_pending": totalPending,
 	})
 }
@@ -297,11 +404,11 @@ func exportTrainingZip(c *fiber.Ctx) error {
 	buf := new(bytes.Buffer)
 	zw := zip.NewWriter(buf)
 
-	writeSplit := func(splitName string, set []PlateTrainingSample) error {
+	writeSplit := func(splitName string, set []PlateTrainingSample) {
 		for i, s := range set {
 			stem := fmt.Sprintf("%s_%05d", splitName, i)
 
-			// Fetch image from S3
+			// Fetch image from S3 using raw ImagePath (S3 key, not the URL)
 			if S3Client != nil {
 				obj, err := S3Client.GetObject(context.Background(), SnapshotsBucket, s.ImagePath, minio.GetObjectOptions{})
 				if err == nil {
@@ -322,7 +429,6 @@ func exportTrainingZip(c *fiber.Ctx) error {
 				fw.Write([]byte(labelLines))
 			}
 		}
-		return nil
 	}
 
 	writeSplit("train", trainSamples)
@@ -330,8 +436,8 @@ func exportTrainingZip(c *fiber.Ctx) error {
 
 	// data.yaml
 	classNames := make([]string, len(masterClasses))
-	for i, c := range masterClasses {
-		classNames[i] = fmt.Sprintf("  - '%s'", c)
+	for i, cls := range masterClasses {
+		classNames[i] = fmt.Sprintf("  - '%s'", cls)
 	}
 	yamlContent := fmt.Sprintf(
 		"nc: %d\nnames:\n%s\ntrain: train/images\nval: valid/images\n",
@@ -340,7 +446,6 @@ func exportTrainingZip(c *fiber.Ctx) error {
 	fw, _ := zw.Create("dataset/data.yaml")
 	fw.Write([]byte(yamlContent))
 
-	// README
 	readmeContent := fmt.Sprintf(
 		"# Thai License Plate Training Dataset\n\nGenerated: %s\nTrain: %d samples\nValid: %d samples\nClasses: %d\n",
 		time.Now().Format(time.RFC3339), len(trainSamples), len(valSamples), len(masterClasses),
@@ -373,23 +478,22 @@ func getExportPreview(c *fiber.Ctx) error {
 	query.Count(&total)
 
 	return c.JSON(fiber.Map{
-		"total":      total,
-		"status":     statusFilter,
-		"conf_max":   confMaxStr,
+		"total":    total,
+		"status":   statusFilter,
+		"conf_max": confMaxStr,
 	})
 }
 
 // buildYoloLabel converts char_labels JSON to YOLO .txt format.
-// Uses corrected_text to override class names if available.
+// Handles Thai unicode → code name conversion, and applies corrected_text override.
 func buildYoloLabel(s PlateTrainingSample) string {
 	var labels []charLabel
 	json.Unmarshal([]byte(s.CharLabels), &labels) //nolint:errcheck
-
 	if len(labels) == 0 {
 		return ""
 	}
 
-	// If corrected text available, override class_name per position
+	// Apply corrected_text override: strip spaces/dashes, then map per position
 	corrected := []rune(strings.ReplaceAll(strings.ReplaceAll(s.CorrectedText, " ", ""), "-", ""))
 	if len(corrected) == len(labels) {
 		for i := range labels {
@@ -399,8 +503,11 @@ func buildYoloLabel(s PlateTrainingSample) string {
 
 	var lines []string
 	for _, lbl := range labels {
-		classID, ok := classIndex[lbl.ClassName]
+		// Normalize Thai unicode → MASTER_CLASSES code before lookup
+		code := normalizeToCode(lbl.ClassName)
+		classID, ok := classIndex[code]
 		if !ok {
+			log.Printf("[Training] Unknown class %q (normalized: %q) — skipping", lbl.ClassName, code)
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("%d %.6f %.6f %.6f %.6f", classID, lbl.CX, lbl.CY, lbl.BW, lbl.BH))

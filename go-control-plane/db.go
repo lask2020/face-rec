@@ -95,7 +95,8 @@ type PlateTrainingSample struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
 	CameraID      uint      `gorm:"not null;index" json:"camera_id"`
 	CameraName    string    `gorm:"size:255;default:''" json:"camera_name"`
-	ImagePath     string    `gorm:"size:512" json:"image_url"` // S3 key; AfterFind rewrites to URL
+	ImagePath     string    `gorm:"size:512" json:"-"`          // S3 key — never mutated after save
+	ImageURL      string    `gorm:"-" json:"image_url"`         // computed by AfterFind
 	CharLabels    string    `gorm:"type:text;default:'[]'" json:"char_labels"` // JSON array
 	RawText       string    `gorm:"size:64;default:''" json:"raw_text"`
 	CorrectedText string    `gorm:"size:64;default:''" json:"corrected_text"`
@@ -111,7 +112,7 @@ func (PlateTrainingSample) TableName() string {
 
 func (pts *PlateTrainingSample) AfterFind(tx *gorm.DB) (err error) {
 	if pts.ImagePath != "" {
-		pts.ImagePath = "/api/static/snapshots/" + pts.ImagePath
+		pts.ImageURL = "/api/static/snapshots/" + pts.ImagePath
 	}
 	return nil
 }
