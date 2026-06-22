@@ -282,49 +282,49 @@ class LicensePlateEngine:
         h, w = frame.shape[:2]
         results: list[PlateResult] = []
         try:
-            # Stage 1 — locate plate
+            # Stage 1 — locate all plates
             padded, xp, yp = _pad_square(frame)
             plate_dets = self._plate_model.detect(padded, conf_thresh=0.1)
             if not plate_dets:
                 return []
 
-            best = max(plate_dets, key=lambda d: (d['bbox'][2]-d['bbox'][0])*(d['bbox'][3]-d['bbox'][1]))
-            bx1, by1, bx2, by2 = [int(v) for v in best['bbox']]
-            pw = bx2 - bx1
-            ph = by2 - by1
-            x1 = max(0, bx1 - xp - int(pw * 0.15))
-            y1 = max(0, by1 - yp - int(ph * 0.20))
-            x2 = min(w, bx2 - xp + int(pw * 0.15))
-            y2 = min(h, by2 - yp + int(ph * 0.20))
+            for det in plate_dets:
+                bx1, by1, bx2, by2 = [int(v) for v in det['bbox']]
+                pw = bx2 - bx1
+                ph = by2 - by1
+                x1 = max(0, bx1 - xp - int(pw * 0.15))
+                y1 = max(0, by1 - yp - int(ph * 0.20))
+                x2 = min(w, bx2 - xp + int(pw * 0.15))
+                y2 = min(h, by2 - yp + int(ph * 0.20))
 
-            crop = frame[y1:y2, x1:x2]
-            if crop.size == 0:
-                return []
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
 
-            # Stage 2 — deskew + scale
-            deskewed = _deskew(crop)
-            ch_h = deskewed.shape[0]
-            scale = max(2.0, 80.0 / ch_h) if ch_h < 60 else (2.0 if ch_h < 120 else 1.0)
-            if scale > 1.0:
-                deskewed = cv2.resize(deskewed, None, fx=scale, fy=scale,
-                                      interpolation=cv2.INTER_CUBIC)
+                # Stage 2 — deskew + scale
+                deskewed = _deskew(crop)
+                ch_h = deskewed.shape[0]
+                scale = max(2.0, 80.0 / ch_h) if ch_h < 60 else (2.0 if ch_h < 120 else 1.0)
+                if scale > 1.0:
+                    deskewed = cv2.resize(deskewed, None, fx=scale, fy=scale,
+                                          interpolation=cv2.INTER_CUBIC)
 
-            # Stage 3 — char detection (BW first, fallback raw)
-            gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            bw = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
+                # Stage 3 — char detection (BW first, fallback raw)
+                gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                bw = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
 
-            pad_bw, cxp, cyp = _pad_square(bw)
-            char_dets = self._char_model.detect(pad_bw, conf_thresh=0.20)
-            if not char_dets:
-                pad_raw, cxp, cyp = _pad_square(deskewed)
-                char_dets = self._char_model.detect(pad_raw, conf_thresh=0.15)
-            if not char_dets:
-                return []
+                pad_bw, cxp, cyp = _pad_square(bw)
+                char_dets = self._char_model.detect(pad_bw, conf_thresh=0.20)
+                if not char_dets:
+                    pad_raw, cxp, cyp = _pad_square(deskewed)
+                    char_dets = self._char_model.detect(pad_raw, conf_thresh=0.15)
+                if not char_dets:
+                    continue
 
-            # Stage 4 — assemble chars
-            results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
-                                                 LicensePlateValidator))
+                # Stage 4 — assemble chars
+                results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
+                                                     LicensePlateValidator))
         except Exception as e:
             logger.error("ONNX detect error: %s", e, exc_info=True)
         return results
@@ -343,56 +343,53 @@ class LicensePlateEngine:
             if not yolo_out or len(yolo_out[0].boxes) == 0:
                 return []
 
-            boxes = sorted(yolo_out[0].boxes,
-                           key=lambda b: ((b.xyxy[0][2]-b.xyxy[0][0])*(b.xyxy[0][3]-b.xyxy[0][1])).item(),
-                           reverse=True)
-            box = boxes[0].xyxy[0].cpu().numpy().astype(int)
-            pw = box[2] - box[0]
-            ph = box[3] - box[1]
-            x1 = max(0, box[0] - xp - int(pw * 0.15))
-            y1 = max(0, box[1] - yp - int(ph * 0.20))
-            x2 = min(w, box[2] - xp + int(pw * 0.15))
-            y2 = min(h, box[3] - yp + int(ph * 0.20))
+            for box_obj in yolo_out[0].boxes:
+                box = box_obj.xyxy[0].cpu().numpy().astype(int)
+                pw = box[2] - box[0]
+                ph = box[3] - box[1]
+                x1 = max(0, box[0] - xp - int(pw * 0.15))
+                y1 = max(0, box[1] - yp - int(ph * 0.20))
+                x2 = min(w, box[2] - xp + int(pw * 0.15))
+                y2 = min(h, box[3] - yp + int(ph * 0.20))
 
-            crop = frame[y1:y2, x1:x2]
-            if crop.size == 0:
-                return []
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
 
-            deskewed = _deskew(crop)
-            ch_h = deskewed.shape[0]
-            scale = max(2.0, 80.0 / ch_h) if ch_h < 60 else (2.0 if ch_h < 120 else 1.0)
-            if scale > 1.0:
-                deskewed = cv2.resize(deskewed, None, fx=scale, fy=scale,
-                                      interpolation=cv2.INTER_CUBIC)
+                deskewed = _deskew(crop)
+                ch_h = deskewed.shape[0]
+                scale = max(2.0, 80.0 / ch_h) if ch_h < 60 else (2.0 if ch_h < 120 else 1.0)
+                if scale > 1.0:
+                    deskewed = cv2.resize(deskewed, None, fx=scale, fy=scale,
+                                          interpolation=cv2.INTER_CUBIC)
 
-            gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
-            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-            bw = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
+                gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                bw = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
 
-            pad_bw, cxp, cyp = _pad_square(bw)
-            char_out = self._char_model(pad_bw, imgsz=640, conf=0.20, verbose=False)
-            if not char_out or len(char_out[0].boxes) == 0:
-                pad_raw, cxp, cyp = _pad_square(deskewed)
-                char_out = self._char_model(pad_raw, imgsz=640, conf=0.15, verbose=False)
-            if not char_out or len(char_out[0].boxes) == 0:
-                return []
+                pad_bw, cxp, cyp = _pad_square(bw)
+                char_out = self._char_model(pad_bw, imgsz=640, conf=0.20, verbose=False)
+                if not char_out or len(char_out[0].boxes) == 0:
+                    pad_raw, cxp, cyp = _pad_square(deskewed)
+                    char_out = self._char_model(pad_raw, imgsz=640, conf=0.15, verbose=False)
+                if not char_out or len(char_out[0].boxes) == 0:
+                    continue
 
-            # Convert to common dict format
-            char_dets = []
-            for cb in char_out[0].boxes:
-                bx1 = cb.xyxy[0][0].item()
-                by1 = cb.xyxy[0][1].item()
-                bx2 = cb.xyxy[0][2].item()
-                by2 = cb.xyxy[0][3].item()
-                cls_name = self._char_model.names[int(cb.cls[0].item())]
-                char_dets.append({
-                    'bbox': [bx1, by1, bx2, by2],
-                    'confidence': float(cb.conf[0].item()),
-                    'class_name': cls_name,
-                })
+                char_dets = []
+                for cb in char_out[0].boxes:
+                    bx1 = cb.xyxy[0][0].item()
+                    by1 = cb.xyxy[0][1].item()
+                    bx2 = cb.xyxy[0][2].item()
+                    by2 = cb.xyxy[0][3].item()
+                    cls_name = self._char_model.names[int(cb.cls[0].item())]
+                    char_dets.append({
+                        'bbox': [bx1, by1, bx2, by2],
+                        'confidence': float(cb.conf[0].item()),
+                        'class_name': cls_name,
+                    })
 
-            results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
-                                                 LicensePlateValidator))
+                results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
+                                                     LicensePlateValidator))
         except Exception as e:
             logger.error(".pt detect error: %s", e, exc_info=True)
         return results

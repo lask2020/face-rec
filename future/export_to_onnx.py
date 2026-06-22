@@ -11,8 +11,8 @@ Usage:
     python future/export_to_onnx.py
 
 Output:
-    backend/models/thai_plate_yolo11n.onnx
-    backend/models/thai_char_yolo26s.onnx
+    backend/data/models/thai_plate_yolo11n.onnx
+    backend/data/models/thai_char_yolo26s.onnx
 """
 
 import os
@@ -20,7 +20,7 @@ import sys
 
 # Run from project root
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODELS_DIR = os.path.join(ROOT, "backend", "models")
+MODELS_DIR = os.path.join(ROOT, "backend", "data", "models")
 
 
 def export(pt_name: str, imgsz: int, opset: int = 12) -> str:
