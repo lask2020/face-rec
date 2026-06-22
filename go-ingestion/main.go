@@ -102,14 +102,18 @@ func handleStart(camID uint, rtspURL string, fps int) {
 	// are H265+ (HEVC), which go2rtc cannot turn into JPEG natively — stream.mjpeg
 	// on the raw stream returns an empty body. Transcoding once, continuously, with
 	// ffmpeg is far cheaper than decoding per-snapshot and never freezes go2rtc.
-	// We cap the transcode framerate to the configured fps so ffmpeg doesn't waste
-	// CPU encoding frames we'd throttle away anyway.
+	//
+	// NOTE: we deliberately do NOT pass an ffmpeg framerate arg (e.g. "#raw=-r N")
+	// here. go2rtc's PUT /api/streams endpoint rejects any source containing a
+	// space ("source with spaces may be insecure"), and "-r N" needs a space. The
+	// captureLoop already throttles reads to intervalMs, so the effective capture
+	// rate is unchanged; only ffmpeg's JPEG encode runs at source fps.
 	mjpegName := fmt.Sprintf("cam_%d_mjpeg", camID)
-	mjpegSource := fmt.Sprintf("ffmpeg:%s#video=mjpeg#raw=-r %d", streamName, fps)
+	mjpegSource := fmt.Sprintf("ffmpeg:%s#video=mjpeg", streamName)
 	if err := registerStream(mjpegName, mjpegSource); err != nil {
 		log.Printf("[Camera %d] Failed to register MJPEG transcode stream: %v", camID, err)
 	} else {
-		log.Printf("[Camera %d] Registered MJPEG transcode stream '%s' (%d fps)", camID, mjpegName, fps)
+		log.Printf("[Camera %d] Registered MJPEG transcode stream '%s'", camID, mjpegName)
 	}
 
 	// Convert FPS to millisecond interval (e.g. 3 fps -> 333ms)
