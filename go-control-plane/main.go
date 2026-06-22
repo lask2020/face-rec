@@ -61,6 +61,15 @@ func main() {
 	api.Get("/plate-detections/stats", getPlateDetectionStats)
 	api.Delete("/plate-detections", clearAllPlateDetections)
 
+	// Training Review
+	api.Get("/training/plates", listTrainingSamples)
+	api.Get("/training/plates/stats", getTrainingStats)
+	api.Get("/training/plates/export", exportTrainingZip)
+	api.Get("/training/plates/export/preview", getExportPreview)
+	api.Get("/training/plates/:id", getTrainingSample)
+	api.Put("/training/plates/:id", updateTrainingSample)
+	api.Post("/training/plates/bulk", bulkUpdateTrainingSamples)
+
 	// Workers
 	api.Get("/workers", GetWorkers)
 	api.Post("/workers/:id/toggle-pause", ToggleWorkerPauseHandler)

@@ -90,6 +90,32 @@ func (PlateDetectionLog) TableName() string {
 	return "plate_detection_logs"
 }
 
+// PlateTrainingSample stores individual plate crops for active-learning review.
+type PlateTrainingSample struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	CameraID      uint      `gorm:"not null;index" json:"camera_id"`
+	CameraName    string    `gorm:"size:255;default:''" json:"camera_name"`
+	ImagePath     string    `gorm:"size:512" json:"image_url"` // S3 key; AfterFind rewrites to URL
+	CharLabels    string    `gorm:"type:text;default:'[]'" json:"char_labels"` // JSON array
+	RawText       string    `gorm:"size:64;default:''" json:"raw_text"`
+	CorrectedText string    `gorm:"size:64;default:''" json:"corrected_text"`
+	Confidence    float64   `gorm:"default:0.0" json:"confidence"`
+	Status        string    `gorm:"size:16;default:'pending';index" json:"status"` // pending|approved|rejected
+	DetectedAt    time.Time `gorm:"index" json:"detected_at"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+func (PlateTrainingSample) TableName() string {
+	return "plate_training_samples"
+}
+
+func (pts *PlateTrainingSample) AfterFind(tx *gorm.DB) (err error) {
+	if pts.ImagePath != "" {
+		pts.ImagePath = "/api/static/snapshots/" + pts.ImagePath
+	}
+	return nil
+}
+
 func InitDatabase() {
 	user := os.Getenv("POSTGRES_USER")
 	pass := os.Getenv("POSTGRES_PASSWORD")
@@ -122,7 +148,7 @@ func InitDatabase() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	err = DB.AutoMigrate(&Person{}, &PersonFace{}, &Camera{}, &DetectionLog{}, &PlateDetectionLog{})
+	err = DB.AutoMigrate(&Person{}, &PersonFace{}, &Camera{}, &DetectionLog{}, &PlateDetectionLog{}, &PlateTrainingSample{})
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}

@@ -6,6 +6,7 @@ const navItems = [
   { path: '/cameras', icon: '📹', label: 'Cameras' },
   { path: '/detections', icon: '🔍', label: 'ตรวจจับหน้า' },
   { path: '/license-plates', icon: '🚗', label: 'ทะเบียนรถ' },
+  { path: '/training', icon: '🎓', label: 'Training Review' },
   { path: '/workers', icon: '🤖', label: 'AI Workers' },
 ];
 

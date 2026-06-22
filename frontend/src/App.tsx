@@ -8,6 +8,7 @@ import Detections from './pages/Detections';
 import LicensePlates from './pages/LicensePlates';
 import Workers from './pages/Workers';
 import Signage from './pages/Signage';
+import TrainingReview from './pages/TrainingReview';
 import ErrorBoundary from './components/ErrorBoundary';
 import { useWebSocket } from './hooks/useWebSocket';
 
@@ -30,6 +31,7 @@ export default function App() {
                 <Route path="/detections" element={<Detections events={events} />} />
                 <Route path="/license-plates" element={<LicensePlates events={plateEvents} />} />
                 <Route path="/workers" element={<Workers />} />
+                <Route path="/training" element={<TrainingReview />} />
               </Routes>
             </Layout>
           }

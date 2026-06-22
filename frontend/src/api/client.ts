@@ -360,3 +360,90 @@ export interface PlateDetectionEvent {
   snapshot_url: string | null;
   timestamp: string;
 }
+
+// ─── Training Sample Types ────────────────────────────────────────────────────
+
+export interface CharLabel {
+  class_name: string;
+  cx: number;
+  cy: number;
+  bw: number;
+  bh: number;
+  confidence: number;
+}
+
+export interface TrainingSample {
+  id: number;
+  camera_id: number;
+  camera_name: string;
+  image_url: string;
+  char_labels: string; // JSON string → CharLabel[]
+  raw_text: string;
+  corrected_text: string;
+  confidence: number;
+  status: 'pending' | 'approved' | 'rejected';
+  detected_at: string;
+  created_at: string;
+}
+
+export interface TrainingSampleList {
+  items: TrainingSample[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface TrainingStats {
+  by_status: { status: string; count: number }[];
+  by_class: { class_name: string; count: number }[];
+  total_pending: number;
+}
+
+export interface ExportPreview {
+  total: number;
+  status: string;
+  conf_max: string;
+}
+
+export const trainingApi = {
+  list: (params: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    conf_max?: number;
+    conf_min?: number;
+    camera_id?: number;
+  } = {}): Promise<TrainingSampleList> =>
+    request('/training/plates', { params: params as Record<string, string | number | undefined | null> }),
+
+  get: (id: number): Promise<TrainingSample> =>
+    request(`/training/plates/${id}`),
+
+  update: (id: number, body: { status?: string; corrected_text?: string; char_labels?: string }): Promise<TrainingSample> =>
+    request(`/training/plates/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  bulkUpdate: (ids: number[], status: string): Promise<{ updated: number }> =>
+    request('/training/plates/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, status }),
+    }),
+
+  stats: (): Promise<TrainingStats> =>
+    request('/training/plates/stats'),
+
+  exportPreview: (status = 'approved', conf_max?: number): Promise<ExportPreview> =>
+    request('/training/plates/export/preview', {
+      params: { status, conf_max: conf_max ?? null },
+    }),
+
+  exportUrl: (status = 'approved', conf_max?: number): string => {
+    const p = new URLSearchParams({ status });
+    if (conf_max != null) p.set('conf_max', String(conf_max));
+    return `/api/training/plates/export?${p.toString()}`;
+  },
+};

@@ -90,14 +90,15 @@ func (x *FrameTask) GetDetectMode() string {
 }
 
 type InferenceResult struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	TaskId          string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	Detections      []*Detection           `protobuf:"bytes,2,rep,name=detections,proto3" json:"detections,omitempty"`
-	ErrorMessage    string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	ProcessTimeMs   float32                `protobuf:"fixed32,4,opt,name=process_time_ms,json=processTimeMs,proto3" json:"process_time_ms,omitempty"`
-	PlateDetections []*PlateDetection      `protobuf:"bytes,5,rep,name=plate_detections,json=plateDetections,proto3" json:"plate_detections,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	TaskId              string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Detections          []*Detection           `protobuf:"bytes,2,rep,name=detections,proto3" json:"detections,omitempty"`
+	ErrorMessage        string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	ProcessTimeMs       float32                `protobuf:"fixed32,4,opt,name=process_time_ms,json=processTimeMs,proto3" json:"process_time_ms,omitempty"`
+	PlateDetections     []*PlateDetection      `protobuf:"bytes,5,rep,name=plate_detections,json=plateDetections,proto3" json:"plate_detections,omitempty"`
+	PlateTrainingFrames []*PlateTrainingFrame  `protobuf:"bytes,6,rep,name=plate_training_frames,json=plateTrainingFrames,proto3" json:"plate_training_frames,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *InferenceResult) Reset() {
@@ -165,6 +166,13 @@ func (x *InferenceResult) GetPlateDetections() []*PlateDetection {
 	return nil
 }
 
+func (x *InferenceResult) GetPlateTrainingFrames() []*PlateTrainingFrame {
+	if x != nil {
+		return x.PlateTrainingFrames
+	}
+	return nil
+}
+
 type Detection struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Bbox             []float32              `protobuf:"fixed32,1,rep,packed,name=bbox,proto3" json:"bbox,omitempty"`                                          // [x1, y1, x2, y2]
@@ -226,15 +234,16 @@ func (x *Detection) GetRestoredFaceJpeg() []byte {
 }
 
 type PlateDetection struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Bbox          []float32              `protobuf:"fixed32,1,rep,packed,name=bbox,proto3" json:"bbox,omitempty"`                         // [x1, y1, x2, y2]
-	PlateNumber   string                 `protobuf:"bytes,2,opt,name=plate_number,json=plateNumber,proto3" json:"plate_number,omitempty"` // normalized plate text e.g. "กข 1234"
-	Confidence    float32                `protobuf:"fixed32,3,opt,name=confidence,proto3" json:"confidence,omitempty"`
-	PlateType     string                 `protobuf:"bytes,4,opt,name=plate_type,json=plateType,proto3" json:"plate_type,omitempty"` // "standard" | "commercial" | "unknown"
-	Province      string                 `protobuf:"bytes,5,opt,name=province,proto3" json:"province,omitempty"`                    // Thai province name if detected
-	RawText       string                 `protobuf:"bytes,6,opt,name=raw_text,json=rawText,proto3" json:"raw_text,omitempty"`       // raw OCR text before validation
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Bbox           []float32              `protobuf:"fixed32,1,rep,packed,name=bbox,proto3" json:"bbox,omitempty"`                         // [x1, y1, x2, y2]
+	PlateNumber    string                 `protobuf:"bytes,2,opt,name=plate_number,json=plateNumber,proto3" json:"plate_number,omitempty"` // normalized plate text e.g. "กข 1234"
+	Confidence     float32                `protobuf:"fixed32,3,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	PlateType      string                 `protobuf:"bytes,4,opt,name=plate_type,json=plateType,proto3" json:"plate_type,omitempty"`                  // "standard" | "commercial" | "unknown"
+	Province       string                 `protobuf:"bytes,5,opt,name=province,proto3" json:"province,omitempty"`                                     // Thai province name if detected
+	RawText        string                 `protobuf:"bytes,6,opt,name=raw_text,json=rawText,proto3" json:"raw_text,omitempty"`                        // raw OCR text before validation
+	CharLabelsJson string                 `protobuf:"bytes,7,opt,name=char_labels_json,json=charLabelsJson,proto3" json:"char_labels_json,omitempty"` // JSON: [{class_name,cx,cy,bw,bh,confidence}]
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PlateDetection) Reset() {
@@ -309,6 +318,82 @@ func (x *PlateDetection) GetRawText() string {
 	return ""
 }
 
+func (x *PlateDetection) GetCharLabelsJson() string {
+	if x != nil {
+		return x.CharLabelsJson
+	}
+	return ""
+}
+
+// A single plate crop frame captured for training / active-learning review.
+type PlateTrainingFrame struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	CropJpeg       []byte                 `protobuf:"bytes,1,opt,name=crop_jpeg,json=cropJpeg,proto3" json:"crop_jpeg,omitempty"`                     // JPEG of deskewed plate crop
+	CharLabelsJson string                 `protobuf:"bytes,2,opt,name=char_labels_json,json=charLabelsJson,proto3" json:"char_labels_json,omitempty"` // JSON: [{class_name,cx,cy,bw,bh,confidence}]
+	Confidence     float32                `protobuf:"fixed32,3,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	RawText        string                 `protobuf:"bytes,4,opt,name=raw_text,json=rawText,proto3" json:"raw_text,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *PlateTrainingFrame) Reset() {
+	*x = PlateTrainingFrame{}
+	mi := &file_facerec_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlateTrainingFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlateTrainingFrame) ProtoMessage() {}
+
+func (x *PlateTrainingFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_facerec_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlateTrainingFrame.ProtoReflect.Descriptor instead.
+func (*PlateTrainingFrame) Descriptor() ([]byte, []int) {
+	return file_facerec_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PlateTrainingFrame) GetCropJpeg() []byte {
+	if x != nil {
+		return x.CropJpeg
+	}
+	return nil
+}
+
+func (x *PlateTrainingFrame) GetCharLabelsJson() string {
+	if x != nil {
+		return x.CharLabelsJson
+	}
+	return ""
+}
+
+func (x *PlateTrainingFrame) GetConfidence() float32 {
+	if x != nil {
+		return x.Confidence
+	}
+	return 0
+}
+
+func (x *PlateTrainingFrame) GetRawText() string {
+	if x != nil {
+		return x.RawText
+	}
+	return ""
+}
+
 var File_facerec_proto protoreflect.FileDescriptor
 
 const file_facerec_proto_rawDesc = "" +
@@ -320,7 +405,7 @@ const file_facerec_proto_rawDesc = "" +
 	"image_data\x18\x02 \x01(\fR\timageData\x12'\n" +
 	"\x0fis_registration\x18\x03 \x01(\bR\x0eisRegistration\x12\x1f\n" +
 	"\vdetect_mode\x18\x04 \x01(\tR\n" +
-	"detectMode\"\xef\x01\n" +
+	"detectMode\"\xc0\x02\n" +
 	"\x0fInferenceResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x122\n" +
 	"\n" +
@@ -328,11 +413,12 @@ const file_facerec_proto_rawDesc = "" +
 	"detections\x12#\n" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12&\n" +
 	"\x0fprocess_time_ms\x18\x04 \x01(\x02R\rprocessTimeMs\x12B\n" +
-	"\x10plate_detections\x18\x05 \x03(\v2\x17.facerec.PlateDetectionR\x0fplateDetections\"k\n" +
+	"\x10plate_detections\x18\x05 \x03(\v2\x17.facerec.PlateDetectionR\x0fplateDetections\x12O\n" +
+	"\x15plate_training_frames\x18\x06 \x03(\v2\x1b.facerec.PlateTrainingFrameR\x13plateTrainingFrames\"k\n" +
 	"\tDetection\x12\x12\n" +
 	"\x04bbox\x18\x01 \x03(\x02R\x04bbox\x12\x1c\n" +
 	"\tembedding\x18\x02 \x03(\x02R\tembedding\x12,\n" +
-	"\x12restored_face_jpeg\x18\x03 \x01(\fR\x10restoredFaceJpeg\"\xbd\x01\n" +
+	"\x12restored_face_jpeg\x18\x03 \x01(\fR\x10restoredFaceJpeg\"\xe7\x01\n" +
 	"\x0ePlateDetection\x12\x12\n" +
 	"\x04bbox\x18\x01 \x03(\x02R\x04bbox\x12!\n" +
 	"\fplate_number\x18\x02 \x01(\tR\vplateNumber\x12\x1e\n" +
@@ -342,7 +428,15 @@ const file_facerec_proto_rawDesc = "" +
 	"\n" +
 	"plate_type\x18\x04 \x01(\tR\tplateType\x12\x1a\n" +
 	"\bprovince\x18\x05 \x01(\tR\bprovince\x12\x19\n" +
-	"\braw_text\x18\x06 \x01(\tR\arawText2Y\n" +
+	"\braw_text\x18\x06 \x01(\tR\arawText\x12(\n" +
+	"\x10char_labels_json\x18\a \x01(\tR\x0echarLabelsJson\"\x96\x01\n" +
+	"\x12PlateTrainingFrame\x12\x1b\n" +
+	"\tcrop_jpeg\x18\x01 \x01(\fR\bcropJpeg\x12(\n" +
+	"\x10char_labels_json\x18\x02 \x01(\tR\x0echarLabelsJson\x12\x1e\n" +
+	"\n" +
+	"confidence\x18\x03 \x01(\x02R\n" +
+	"confidence\x12\x19\n" +
+	"\braw_text\x18\x04 \x01(\tR\arawText2Y\n" +
 	"\x14FaceInferenceService\x12A\n" +
 	"\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x010\x01B\vZ\t./facerecb\x06proto3"
 
@@ -358,23 +452,25 @@ func file_facerec_proto_rawDescGZIP() []byte {
 	return file_facerec_proto_rawDescData
 }
 
-var file_facerec_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_facerec_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_facerec_proto_goTypes = []any{
-	(*FrameTask)(nil),       // 0: facerec.FrameTask
-	(*InferenceResult)(nil), // 1: facerec.InferenceResult
-	(*Detection)(nil),       // 2: facerec.Detection
-	(*PlateDetection)(nil),  // 3: facerec.PlateDetection
+	(*FrameTask)(nil),          // 0: facerec.FrameTask
+	(*InferenceResult)(nil),    // 1: facerec.InferenceResult
+	(*Detection)(nil),          // 2: facerec.Detection
+	(*PlateDetection)(nil),     // 3: facerec.PlateDetection
+	(*PlateTrainingFrame)(nil), // 4: facerec.PlateTrainingFrame
 }
 var file_facerec_proto_depIdxs = []int32{
 	2, // 0: facerec.InferenceResult.detections:type_name -> facerec.Detection
 	3, // 1: facerec.InferenceResult.plate_detections:type_name -> facerec.PlateDetection
-	1, // 2: facerec.FaceInferenceService.ProcessStream:input_type -> facerec.InferenceResult
-	0, // 3: facerec.FaceInferenceService.ProcessStream:output_type -> facerec.FrameTask
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	4, // 2: facerec.InferenceResult.plate_training_frames:type_name -> facerec.PlateTrainingFrame
+	1, // 3: facerec.FaceInferenceService.ProcessStream:input_type -> facerec.InferenceResult
+	0, // 4: facerec.FaceInferenceService.ProcessStream:output_type -> facerec.FrameTask
+	4, // [4:5] is the sub-list for method output_type
+	3, // [3:4] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_facerec_proto_init() }
@@ -388,7 +484,7 @@ func file_facerec_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_facerec_proto_rawDesc), len(file_facerec_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

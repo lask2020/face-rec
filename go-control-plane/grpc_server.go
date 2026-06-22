@@ -533,6 +533,11 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 		handlePlateDetections(ctx, result, task)
 	}
 
+	// Save low-confidence frames for training review
+	if len(result.PlateTrainingFrames) > 0 {
+		go saveTrainingFrames(ctx, result.PlateTrainingFrames, task)
+	}
+
 	// If no faces detected, we skip face logging and S3 uploads
 	if len(result.Detections) == 0 {
 		log.Printf("[gRPC Debug] TaskId=%s has 0 detections, skipping", result.TaskId)

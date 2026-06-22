@@ -21,6 +21,7 @@ message InferenceResult {
   string error_message = 3;
   float process_time_ms = 4;
   repeated PlateDetection plate_detections = 5;
+  repeated PlateTrainingFrame plate_training_frames = 6;
 }
 
 message Detection {
@@ -36,4 +37,13 @@ message PlateDetection {
   string plate_type = 4;               // "standard" | "commercial" | "unknown"
   string province = 5;                 // Thai province name if detected
   string raw_text = 6;                 // raw OCR text before validation
+  string char_labels_json = 7;         // JSON: [{class_name,cx,cy,bw,bh,confidence}]
+}
+
+// A single plate crop frame captured for training / active-learning review.
+message PlateTrainingFrame {
+  bytes crop_jpeg = 1;          // JPEG of deskewed plate crop
+  string char_labels_json = 2;  // JSON: [{class_name,cx,cy,bw,bh,confidence}]
+  float confidence = 3;
+  string raw_text = 4;
 }

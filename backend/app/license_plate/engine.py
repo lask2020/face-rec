@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class CharDet:
+    x_norm: float      # 0.0–1.0 within plate bbox (left→right, position-based)
+    char: str
+    confidence: float
+    # YOLO-format bbox in deskewed crop image coords (normalized 0-1)
+    cx: float = 0.0   # center x
+    cy: float = 0.0   # center y
+    bw: float = 0.0   # width
+    bh: float = 0.0   # height
+
+
+@dataclass
 class PlateResult:
     plate_number: Optional[str]   # normalized plate text, e.g. "กข 1234"
     confidence: float             # 0.0–1.0
@@ -24,6 +36,8 @@ class PlateResult:
     plate_type: str               # "standard" | "commercial" | "unknown"
     province: Optional[str]       # Thai province name if detected
     raw_text: str                 # raw chars before validation
+    chars: list = field(default_factory=list)  # list[CharDet] for multi-frame assembly
+    crop_bytes: Optional[bytes] = None  # JPEG of deskewed plate crop (for training)
 
 
 # ── CHAR_LABEL_MAP ────────────────────────────────────────────────────────────
@@ -352,8 +366,18 @@ class LicensePlateEngine:
                     continue
 
                 # Stage 4 — assemble chars
-                results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
-                                                     LicensePlateValidator))
+                plate_results = self._assemble_chars(
+                    char_dets, cxp, cyp, x1, y1, x2, y2,
+                    LicensePlateValidator, crop_shape=deskewed.shape[:2])
+                # Attach deskewed color crop bytes for training data capture
+                try:
+                    ok, buf = cv2.imencode('.jpg', deskewed, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    crop_bytes = bytes(buf) if ok else None
+                except Exception:
+                    crop_bytes = None
+                for pr in plate_results:
+                    pr.crop_bytes = crop_bytes
+                results.extend(plate_results)
         except Exception as e:
             logger.error("ONNX detect error: %s", e, exc_info=True)
         return results
@@ -425,8 +449,17 @@ class LicensePlateEngine:
                         'class_name': cls_name,
                     })
 
-                results.extend(self._assemble_chars(char_dets, cxp, cyp, x1, y1, x2, y2,
-                                                     LicensePlateValidator))
+                plate_results = self._assemble_chars(
+                    char_dets, cxp, cyp, x1, y1, x2, y2,
+                    LicensePlateValidator, crop_shape=deskewed.shape[:2])
+                try:
+                    ok, buf = cv2.imencode('.jpg', deskewed, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    crop_bytes = bytes(buf) if ok else None
+                except Exception:
+                    crop_bytes = None
+                for pr in plate_results:
+                    pr.crop_bytes = crop_bytes
+                results.extend(plate_results)
         except Exception as e:
             logger.error(".pt detect error: %s", e, exc_info=True)
         return results
@@ -434,10 +467,19 @@ class LicensePlateEngine:
     # ── shared char assembly ─────────────────────────────────────────────────
 
     def _assemble_chars(self, char_dets: list[dict], cxp: float, cyp: float,
-                        x1: int, y1: int, x2: int, y2: int, validator) -> list[PlateResult]:
+                        x1: int, y1: int, x2: int, y2: int, validator,
+                        crop_shape: tuple = (0, 0)) -> list[PlateResult]:
+        """
+        crop_shape: (h, w) of the deskewed plate crop image, used to produce
+        YOLO-normalized bboxes for training data export.
+        """
         chars_with_pos = []
         province_detected = None
         box_heights = []
+        # raw bbox data for CharDet (in deskewed crop space)
+        raw_bboxes: list[tuple] = []
+
+        crop_h, crop_w = crop_shape if crop_shape[0] > 0 else (1, 1)
 
         for det in char_dets:
             bx1, by1, bx2, by2 = det['bbox']
@@ -450,7 +492,8 @@ class LicensePlateEngine:
             if cls_name in PROVINCE_CODES:
                 province_detected = thai_char
                 continue
-            chars_with_pos.append((xc, yc, thai_char, conf))
+            # tuple: (xc, yc, char, conf, raw_bx1, raw_by1, raw_bx2, raw_by2)
+            chars_with_pos.append((xc, yc, thai_char, conf, bx1, by1, bx2, by2))
 
         if not chars_with_pos:
             return []
@@ -477,6 +520,26 @@ class LicensePlateEngine:
         avg_conf = float(np.mean([c[3] for c in plate_chars]))
         min_conf = float(np.min([c[3] for c in plate_chars]))
 
+        n = len(plate_chars)
+        chars_for_result = []
+        for i, c in enumerate(plate_chars):
+            # c = (xc, yc, char, conf, rbx1, rby1, rbx2, rby2)
+            rbx1, rby1, rbx2, rby2 = c[4], c[5], c[6], c[7]
+            # normalize raw padded-image bbox to deskewed crop space
+            rcx = ((rbx1 + rbx2) / 2 - cxp) / crop_w
+            rcy = ((rby1 + rby2) / 2 - cyp) / crop_h
+            rbw = (rbx2 - rbx1) / crop_w
+            rbh = (rby2 - rby1) / crop_h
+            chars_for_result.append(CharDet(
+                x_norm=(i + 0.5) / n,
+                char=c[2],
+                confidence=c[3],
+                cx=max(0.0, min(1.0, rcx)),
+                cy=max(0.0, min(1.0, rcy)),
+                bw=min(1.0, max(0.0, rbw)),
+                bh=min(1.0, max(0.0, rbh)),
+            ))
+
         # Discard single-character fragments — no valid Thai plate is shorter than 3 chars.
         if len(raw_text) < 3:
             logger.debug("Discarding fragment '%s' (len=%d)", raw_text, len(raw_text))
@@ -502,6 +565,7 @@ class LicensePlateEngine:
             plate_type='standard',
             province=province_detected,
             raw_text=raw_text,
+            chars=chars_for_result,
         )]
 
 

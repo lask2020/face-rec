@@ -1,1 +1,1 @@
-from .engine import LicensePlateEngine, PlateResult
+from .engine import LicensePlateEngine, PlateResult, CharDet

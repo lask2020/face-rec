@@ -22,9 +22,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import facerec_pb2
 import facerec_pb2_grpc
+from collections import defaultdict, Counter
 from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 from app.face_restorer import face_restorer
-from app.license_plate import LicensePlateEngine, PlateResult
+from app.license_plate import LicensePlateEngine, PlateResult, CharDet
+from app.license_plate.validate import LicensePlateValidator
 
 license_plate_engine: LicensePlateEngine | None = None
 
@@ -127,37 +129,21 @@ class PlateTrack:
     """Tracks a license plate bbox across frames and keeps the best OCR result."""
 
     def __init__(self, camera_id: int, plate_result: PlateResult, task_id: str):
-        self.camera_id  = camera_id
-        self.track_id   = str(uuid.uuid4())
-        self.best       = plate_result
-        # Most recent bbox — used for spatial (IoU) matching. Kept separate
-        # from best.bbox because a moving plate shifts position every frame
-        # while best stays frozen on the best-OCR frame.
-        self.last_bbox  = plate_result.bbox
-        self.task_id    = task_id
-        self.hit_count  = 1
-        self.first_seen = time.time()
-        self.last_seen  = time.time()
+        self.camera_id    = camera_id
+        self.track_id     = str(uuid.uuid4())
+        self.frame_results: list[PlateResult] = [plate_result]
+        self.last_bbox    = plate_result.bbox
+        self.task_id      = task_id
+        self.hit_count    = 1
+        self.first_seen   = time.time()
+        self.last_seen    = time.time()
 
     def update(self, plate_result: PlateResult, task_id: str):
-        """
-        Keep the best OCR result:
-          1. Valid plate_number beats no plate_number.
-          2. Among equals, higher confidence wins.
-        """
-        current_valid = self.best.plate_number is not None
-        new_valid     = plate_result.plate_number is not None
-
-        if new_valid and not current_valid:
-            self.best    = plate_result
-            self.task_id = task_id
-        elif new_valid == current_valid and plate_result.confidence > self.best.confidence:
-            self.best    = plate_result
-            self.task_id = task_id
-
-        # Follow the plate's current position regardless of OCR quality.
+        """Accumulate every frame — best-char selection happens at flush time."""
+        self.frame_results.append(plate_result)
         self.last_bbox = plate_result.bbox
         self.last_seen = time.time()
+        self.task_id   = task_id
         self.hit_count += 1
 
 
@@ -228,6 +214,8 @@ PLATE_COOLDOWN_DURATION = 10.0  # don't re-report same plate for 10 s
 MIN_PLATE_FLUSH_CONF   = float(os.getenv("MIN_PLATE_FLUSH_CONF", "0.25"))  # discard very noisy invalids
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
+# Frames with confidence below this threshold are saved as training candidates
+TRAINING_CAPTURE_CONF_MAX = float(os.getenv("TRAINING_CAPTURE_CONF_MAX", "0.65"))
 
 
 def clean_cooldowns():
@@ -276,28 +264,10 @@ def add_plate_cooldown(plate_number: str):
         plate_cooldowns[_plate_cooldown_key(plate_number)] = time.time() + PLATE_COOLDOWN_DURATION
 
 
-def claim_plate_slot(plate_number: str) -> bool:
-    """Atomically check cooldown and claim it in one lock acquisition.
-
-    Returns True if the caller should proceed (plate was NOT on cooldown and
-    the slot has been claimed).  Returns False if already on cooldown.
-
-    Using separate is_plate_on_cooldown + add_plate_cooldown calls creates a
-    TOCTOU race when flush_plate_track runs concurrently in a thread pool —
-    two threads can both pass the check before either sets the cooldown.
-    """
-    key = _plate_cooldown_key(plate_number)
-    now = time.time()
-    with plate_cooldowns_lock:
-        exp = plate_cooldowns.get(key)
-        if exp is not None and exp > now:
-            return False  # already on cooldown
-        plate_cooldowns[key] = now + PLATE_COOLDOWN_DURATION
-        return True
 
 
 def _plate_cooldown_key(plate_number: str) -> str:
-    """Normalize plate number for cooldown lookup so minor OCR variations don't bypass it.
+    """Normalize plate number for cooldown lookup.
 
     Strips hyphens and spaces so "7-ขว-1344" and "7ขว1344" share the same key.
     """
@@ -305,15 +275,133 @@ def _plate_cooldown_key(plate_number: str) -> str:
     return _re.sub(r'[\s\-–—]', '', plate_number)
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Edit distance between two strings."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for ca in a:
+        curr = [prev[0] + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+# Max edit distance for fuzzy cooldown matching — covers 1-2 OCR misreads
+PLATE_FUZZY_DIST = int(os.getenv("PLATE_FUZZY_DIST", "2"))
+
+
+def claim_plate_slot(plate_number: str) -> bool:
+    """Atomically check cooldown (exact + fuzzy) and claim the slot.
+
+    Returns True if the caller should proceed (not on cooldown).
+    Fuzzy match blocks OCR variants of the same physical plate
+    (e.g. ญพ8378 vs ขพ8378 differ by 1 char → same cooldown slot).
+    """
+    key = _plate_cooldown_key(plate_number)
+    now = time.time()
+    with plate_cooldowns_lock:
+        # Fast path: exact match
+        exp = plate_cooldowns.get(key)
+        if exp is not None and exp > now:
+            return False
+        # Fuzzy path: scan active cooldowns for near-matches
+        for existing_key, exp in plate_cooldowns.items():
+            if exp <= now:
+                continue
+            if _levenshtein(key, existing_key) <= PLATE_FUZZY_DIST:
+                return False
+        plate_cooldowns[key] = now + PLATE_COOLDOWN_DURATION
+        return True
+
+
+def _assemble_multi_frame(frame_results: list) -> PlateResult:
+    """Assemble the best plate reading from all frames in a track.
+
+    Algorithm:
+      1. Group frames by character count.
+      2. Pick the majority count; fallback to best-confidence frame if no majority.
+      3. For each character position (slot), pick the char with highest confidence
+         across all majority frames.
+      4. Validate and return a new PlateResult whose confidence is the mean of
+         per-slot best confidences (no single weak character drags it down).
+    """
+    # Step 1 — group by char count (skip frames with no char data)
+    count_groups: dict = defaultdict(list)
+    for pr in frame_results:
+        if pr.chars:
+            count_groups[len(pr.chars)].append(pr)
+
+    # Fallback: no char-level data at all (old-path or engine error)
+    if not count_groups:
+        return max(frame_results, key=lambda pr: pr.confidence)
+
+    # Step 2 — majority count
+    best_count = max(count_groups, key=lambda k: len(count_groups[k]))
+    candidates = count_groups[best_count]
+
+    # Step 3 — slot pool: slot_idx → list of (char, conf)
+    slot_pool: dict = defaultdict(list)
+    for pr in candidates:
+        for ch in pr.chars:
+            slot_idx = min(int(ch.x_norm * best_count), best_count - 1)
+            slot_pool[slot_idx].append((ch.char, ch.confidence))
+
+    # If any slot is empty (shouldn't happen with count filter) → fallback
+    if len(slot_pool) < best_count:
+        return max(frame_results, key=lambda pr: pr.confidence)
+
+    assembled_chars = []
+    total_conf = 0.0
+    for i in range(best_count):
+        best_char, best_conf = max(slot_pool[i], key=lambda x: x[1])
+        assembled_chars.append(best_char)
+        total_conf += best_conf
+
+    raw_text = "".join(assembled_chars)
+    mean_conf = total_conf / best_count
+
+    # Step 4 — validate against Thai plate rules
+    is_valid, normalized, _ = LicensePlateValidator.validate(raw_text)
+    if not is_valid:
+        corrected = LicensePlateValidator.correct_common_errors(raw_text)
+        if corrected:
+            is_valid, normalized, _ = LicensePlateValidator.validate(corrected)
+
+    plate_number = normalized if is_valid else None
+
+    # Province: majority vote across candidate frames
+    provinces = [pr.province for pr in candidates if pr.province]
+    province = Counter(provinces).most_common(1)[0][0] if provinces else None
+
+    best_frame = max(candidates, key=lambda pr: pr.confidence)
+
+    return PlateResult(
+        plate_number=plate_number,
+        confidence=mean_conf if plate_number else mean_conf * 0.5,
+        bbox=best_frame.bbox,
+        plate_type=best_frame.plate_type,
+        province=province,
+        raw_text=raw_text,
+        chars=[],
+    )
+
+
 def flush_plate_track(track: PlateTrack, send_queue):
     if track.hit_count < MIN_PLATE_HITS:
+        raw_sample = track.frame_results[0].raw_text if track.frame_results else "?"
         logger.info(
             f"Discarding plate track for camera {track.camera_id} "
-            f"(hits={track.hit_count} < {MIN_PLATE_HITS}) — single-frame detection  raw='{track.best.raw_text}'"
+            f"(hits={track.hit_count} < {MIN_PLATE_HITS}) — single-frame detection  raw='{raw_sample}'"
         )
         return
 
-    pr = track.best
+    pr = _assemble_multi_frame(track.frame_results)
     label = pr.plate_number or pr.raw_text or "?"
 
     # Gate: discard very noisy results that the engine couldn't parse into a valid plate.
@@ -335,6 +423,26 @@ def flush_plate_track(track: PlateTrack, send_queue):
         f"{label}  conf={pr.confidence:.2f}  hits={track.hit_count}"
     )
 
+    import json as _json
+
+    def _char_labels_json(chars) -> str:
+        return _json.dumps([
+            {"class_name": c.char, "cx": c.cx, "cy": c.cy,
+             "bw": c.bw, "bh": c.bh, "confidence": c.confidence}
+            for c in chars
+        ], ensure_ascii=False)
+
+    # Collect low-confidence frames as training candidates
+    training_frames = []
+    for fr in track.frame_results:
+        if fr.confidence < TRAINING_CAPTURE_CONF_MAX and fr.chars and fr.crop_bytes:
+            training_frames.append(facerec_pb2.PlateTrainingFrame(
+                crop_jpeg=fr.crop_bytes,
+                char_labels_json=_char_labels_json(fr.chars),
+                confidence=fr.confidence,
+                raw_text=fr.raw_text,
+            ))
+
     send_queue.put(facerec_pb2.InferenceResult(
         task_id=track.task_id,
         detections=[],
@@ -345,7 +453,9 @@ def flush_plate_track(track: PlateTrack, send_queue):
             plate_type=pr.plate_type,
             province=pr.province or "",
             raw_text=pr.raw_text,
+            char_labels_json=_char_labels_json(pr.chars) if pr.chars else "",
         )],
+        plate_training_frames=training_frames,
     ))
 
 
