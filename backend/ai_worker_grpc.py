@@ -187,6 +187,7 @@ plate_cooldowns_lock = threading.Lock()
 
 # Camera state and logs suppression
 last_seen_camera = {}
+last_detect_mode = {}  # camera_id -> last logged detect_mode
 cameras_lock = threading.Lock()
 
 # Stats for average process time tracking
@@ -417,6 +418,7 @@ def track_flusher(send_queue, stop_event=None):
                         if now - last_ts > inactive_timeout:
                             logger.info(f"Stopped processing stream for Camera {cam_id} (inactive)")
                             del last_seen_camera[cam_id]
+                            last_detect_mode.pop(cam_id, None)
             except Exception as e:
                 logger.error(f"Error in track_flusher: {e}")
 
@@ -470,6 +472,9 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
             with cameras_lock:
                 if camera_id not in last_seen_camera:
                     logger.info(f"Started processing stream for Camera {camera_id} (detect_mode='{detect_mode}')")
+                elif last_detect_mode.get(camera_id) != detect_mode:
+                    logger.info(f"Camera {camera_id} detect_mode changed: '{last_detect_mode.get(camera_id)}' -> '{detect_mode}'")
+                last_detect_mode[camera_id] = detect_mode
                 last_seen_camera[camera_id] = now_time
 
             faces = []
@@ -599,6 +604,7 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
             active_plate_tracks.clear()
         with cameras_lock:
             last_seen_camera.clear()
+            last_detect_mode.clear()
 
         logger.info(f"Connecting to gRPC server at {control_plane_url}...")
         try:
