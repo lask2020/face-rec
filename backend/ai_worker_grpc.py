@@ -173,6 +173,40 @@ def _iou(a: list[float], b: list[float]) -> float:
     return inter / (area_a + area_b - inter + 1e-6)
 
 
+def _plate_boxes_match(a: list[float], b: list[float]) -> bool:
+    """Return True if two plate bboxes likely belong to the same physical plate.
+
+    Pure IoU fails when the detection model returns slightly different crop sizes
+    between frames (common with padded YOLO inference) or when the vehicle moves
+    a small amount between 2fps captures.  We fall back to centre-distance so
+    that any overlap OR proximity within ~80% of the plate width counts as a match.
+    """
+    if _iou(a, b) >= PLATE_IOU_THRESH:
+        return True
+    # Fallback: centres within 0.8× the average plate width
+    cx_a = (a[0] + a[2]) / 2;  cy_a = (a[1] + a[3]) / 2
+    cx_b = (b[0] + b[2]) / 2;  cy_b = (b[1] + b[3]) / 2
+    avg_w = ((a[2] - a[0]) + (b[2] - b[0])) / 2
+    dist  = ((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2) ** 0.5
+    return dist < avg_w * 0.8
+
+
+# Per-camera lock for plate detection + tracking.
+# The thread pool processes multiple cameras in parallel, but frames from the
+# SAME camera must be serialized so the tracker always sees consecutive bboxes.
+# Without this, batch-dispatched frames for one camera arrive at the thread pool
+# almost simultaneously; whichever thread wins the race creates a new track
+# instead of updating the existing one.
+_camera_plate_locks: dict[int, threading.Lock] = {}
+_camera_plate_locks_guard = threading.Lock()
+
+def _get_camera_plate_lock(camera_id: int) -> threading.Lock:
+    with _camera_plate_locks_guard:
+        if camera_id not in _camera_plate_locks:
+            _camera_plate_locks[camera_id] = threading.Lock()
+        return _camera_plate_locks[camera_id]
+
+
 # Active tracks and cooldown state
 active_tracks = {}
 tracks_lock = threading.Lock()
@@ -258,6 +292,26 @@ def add_plate_cooldown(plate_number: str):
         plate_cooldowns[_plate_cooldown_key(plate_number)] = time.time() + PLATE_COOLDOWN_DURATION
 
 
+def claim_plate_slot(plate_number: str) -> bool:
+    """Atomically check cooldown and claim it in one lock acquisition.
+
+    Returns True if the caller should proceed (plate was NOT on cooldown and
+    the slot has been claimed).  Returns False if already on cooldown.
+
+    Using separate is_plate_on_cooldown + add_plate_cooldown calls creates a
+    TOCTOU race when flush_plate_track runs concurrently in a thread pool —
+    two threads can both pass the check before either sets the cooldown.
+    """
+    key = _plate_cooldown_key(plate_number)
+    now = time.time()
+    with plate_cooldowns_lock:
+        exp = plate_cooldowns.get(key)
+        if exp is not None and exp > now:
+            return False  # already on cooldown
+        plate_cooldowns[key] = now + PLATE_COOLDOWN_DURATION
+        return True
+
+
 def _plate_cooldown_key(plate_number: str) -> str:
     """Normalize plate number for cooldown lookup so minor OCR variations don't bypass it.
 
@@ -287,17 +341,15 @@ def flush_plate_track(track: PlateTrack, send_queue):
         )
         return
 
-    if pr.plate_number and is_plate_on_cooldown(_plate_cooldown_key(pr.plate_number)):
-        logger.info(f"Plate {pr.plate_number} on cooldown — skipping flush")
-        return
+    if pr.plate_number:
+        if not claim_plate_slot(pr.plate_number):
+            logger.info(f"Plate {pr.plate_number} on cooldown — skipping flush")
+            return
 
     logger.info(
         f"Flushing plate track for camera {track.camera_id}: "
         f"{label}  conf={pr.confidence:.2f}  hits={track.hit_count}"
     )
-
-    if pr.plate_number:
-        add_plate_cooldown(pr.plate_number)
 
     send_queue.put(facerec_pb2.InferenceResult(
         task_id=track.task_id,
@@ -504,25 +556,30 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
 
             faces = []
 
-            # Run plate detection when mode is "plate" or "both"
+            # Run plate detection when mode is "plate" or "both".
+            # Acquire a per-camera lock that covers BOTH inference and tracking so
+            # that consecutive frames from the same camera are always processed in
+            # arrival order — prevents the thread pool from racing two frames
+            # through detection simultaneously and creating duplicate tracks.
             if detect_mode not in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
                 logger.debug(f"Camera {camera_id}: skipping plate detection (detect_mode='{detect_mode}')")
             if detect_mode in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
-                plate_results: list[PlateResult] = license_plate_engine.detect(img)
-                if plate_results:
-                    logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame raw={[p.raw_text for p in plate_results]}")
-                with plate_tracks_lock:
-                    for pr in plate_results:
-                        matched_pt = None
-                        for pt in active_plate_tracks.values():
-                            if pt.camera_id == camera_id and _iou(pt.last_bbox, pr.bbox) >= PLATE_IOU_THRESH:
-                                matched_pt = pt
-                                break
-                        if matched_pt:
-                            matched_pt.update(pr, task_id)
-                        else:
-                            new_pt = PlateTrack(camera_id, pr, task_id)
-                            active_plate_tracks[new_pt.track_id] = new_pt
+                with _get_camera_plate_lock(camera_id):
+                    plate_results: list[PlateResult] = license_plate_engine.detect(img)
+                    if plate_results:
+                        logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame raw={[p.raw_text for p in plate_results]}")
+                    with plate_tracks_lock:
+                        for pr in plate_results:
+                            matched_pt = None
+                            for pt in active_plate_tracks.values():
+                                if pt.camera_id == camera_id and _plate_boxes_match(pt.last_bbox, pr.bbox):
+                                    matched_pt = pt
+                                    break
+                            if matched_pt:
+                                matched_pt.update(pr, task_id)
+                            else:
+                                new_pt = PlateTrack(camera_id, pr, task_id)
+                                active_plate_tracks[new_pt.track_id] = new_pt
 
             # Run face detection when mode is "face" or "both"
             if detect_mode in ("face", "both"):
