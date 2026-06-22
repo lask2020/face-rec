@@ -46,4 +46,5 @@ message PlateTrainingFrame {
   string char_labels_json = 2;  // JSON: [{class_name,cx,cy,bw,bh,confidence}]
   float confidence = 3;
   string raw_text = 4;
+  string track_id = 5;          // stable UUID for the PlateTrack that generated this frame
 }

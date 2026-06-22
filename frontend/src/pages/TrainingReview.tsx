@@ -4,28 +4,53 @@ import type { TrainingSample, TrainingStats, CharLabel } from '../api/client';
 
 const LIMIT = 20;
 
+// ── Class options for char label editor ──────────────────────────────────────
+
+const DIGIT_OPTIONS = ['0','1','2','3','4','5','6','7','8','9'];
+
+const THAI_CHAR_OPTIONS = [
+  'ก','ข','ค','ฆ','ง','จ','ฉ','ช','ซ','ฌ',
+  'ญ','ฎ','ฏ','ฐ','ฑ','ฒ','ณ','ด','ต','ถ',
+  'ท','ธ','น','บ','ป','ผ','ฝ','พ','ฟ','ภ',
+  'ม','ย','ร','ล','ว','ศ','ษ','ส','ห','ฬ',
+  'อ','ฮ',
+];
+
+const PROVINCE_OPTIONS = [
+  'ACR','ATG','AYA','BKK','BKN','BRM','CBI','CCO','CMI','CNT',
+  'CPM','CPN','CRI','CTI','KBI','KKN','KPT','KRI','KSN','LEI',
+  'LPG','LPN','LRI','MDH','MKM','NAN','NBI','NBP','NKI','NMA',
+  'NPM','NPT','NRT','NSN','NST','NWT','NYK','PBI','PCT','PKN',
+  'PKT','PLG','PLK','PNA','PNB','PRE','PRI','PTE','PTN','PYO',
+  'RBR','RET','RNG','RYG','SBR','SKA','SKM','SKN','SKW','SNI',
+  'SNK','SPB','SPK','SRI','SRN','SSK','STI','STN','TAK','TRG',
+  'TRT','UBN','UDN','UTI','UTT','YLA','YST',
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function parsedLabels(raw: string): CharLabel[] {
   try { return JSON.parse(raw) as CharLabel[]; } catch { return []; }
 }
 
-// ── Canvas overlay component ──────────────────────────────────────────────────
+// ── Canvas bbox overlay ───────────────────────────────────────────────────────
 
 interface PlateCanvasProps {
   imageUrl: string;
   labels: CharLabel[];
-  onCharClick?: (idx: number) => void;
+  selectedIdx: number | null;
+  onCharClick: (idx: number) => void;
 }
 
-function PlateCanvas({ imageUrl, labels, onCharClick }: PlateCanvasProps) {
+function PlateCanvas({ imageUrl, labels, selectedIdx, onCharClick }: PlateCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [displaySize, setDisplaySize] = useState<[number, number]>([240, 80]);
+  const [displaySize, setDisplaySize] = useState<[number, number]>([280, 80]);
 
   useEffect(() => {
     const img = new Image();
     img.onload = () => {
-      const maxW = 300;
-      const scale = maxW / img.naturalWidth;
-      setDisplaySize([maxW, Math.round(img.naturalHeight * scale)]);
+      const maxW = 280;
+      setDisplaySize([maxW, Math.round(img.naturalHeight * (maxW / img.naturalWidth))]);
     };
     img.src = imageUrl;
   }, [imageUrl]);
@@ -37,31 +62,39 @@ function PlateCanvas({ imageUrl, labels, onCharClick }: PlateCanvasProps) {
     if (!ctx) return;
     const img = new Image();
     img.onload = () => {
-      canvas.width = displaySize[0];
-      canvas.height = displaySize[1];
-      ctx.drawImage(img, 0, 0, displaySize[0], displaySize[1]);
-      labels.forEach((lbl) => {
-        const x = (lbl.cx - lbl.bw / 2) * displaySize[0];
-        const y = (lbl.cy - lbl.bh / 2) * displaySize[1];
-        const w = lbl.bw * displaySize[0];
-        const h = lbl.bh * displaySize[1];
-        ctx.strokeStyle = lbl.confidence > 0.7 ? '#22c55e' : lbl.confidence > 0.4 ? '#f59e0b' : '#ef4444';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(x, y, w, h);
+      const [w, h] = displaySize;
+      canvas.width = w;
+      canvas.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+      labels.forEach((lbl, i) => {
+        const x = (lbl.cx - lbl.bw / 2) * w;
+        const y = (lbl.cy - lbl.bh / 2) * h;
+        const bw = lbl.bw * w;
+        const bh = lbl.bh * h;
+        const isSelected = i === selectedIdx;
+        ctx.strokeStyle = isSelected
+          ? '#facc15'
+          : lbl.confidence > 0.7 ? '#22c55e' : lbl.confidence > 0.4 ? '#f59e0b' : '#ef4444';
+        ctx.lineWidth = isSelected ? 2.5 : 1.5;
+        ctx.strokeRect(x, y, bw, bh);
+        if (isSelected) {
+          ctx.fillStyle = 'rgba(250,204,21,0.15)';
+          ctx.fillRect(x, y, bw, bh);
+        }
         ctx.fillStyle = ctx.strokeStyle;
-        ctx.font = '9px sans-serif';
-        ctx.fillText(lbl.class_name, x + 1, y > 10 ? y - 2 : y + h + 9);
+        ctx.font = 'bold 9px sans-serif';
+        ctx.fillText(lbl.class_name, x + 1, y > 10 ? y - 2 : y + bh + 9);
       });
     };
     img.src = imageUrl;
-  }, [imageUrl, labels, displaySize]);
+  }, [imageUrl, labels, displaySize, selectedIdx]);
 
   return (
     <canvas
       ref={canvasRef}
-      style={{ display: 'block', cursor: onCharClick ? 'pointer' : 'default' }}
+      style={{ display: 'block', cursor: 'pointer' }}
       onClick={(e) => {
-        if (!onCharClick || labels.length === 0) return;
+        if (!labels.length) return;
         const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
         const mx = (e.clientX - rect.left) / displaySize[0];
         const my = (e.clientY - rect.top) / displaySize[1];
@@ -77,7 +110,108 @@ function PlateCanvas({ imageUrl, labels, onCharClick }: PlateCanvasProps) {
   );
 }
 
-// ── Stat bar chart ────────────────────────────────────────────────────────────
+// ── Per-char label editor ─────────────────────────────────────────────────────
+
+interface CharLabelEditorProps {
+  labels: CharLabel[];
+  selectedIdx: number | null;
+  onSelect: (idx: number) => void;
+  onChange: (idx: number, newClass: string) => void;
+}
+
+function CharLabelEditor({ labels, selectedIdx, onSelect, onChange }: CharLabelEditorProps) {
+  if (!labels.length) return null;
+  const selected = selectedIdx !== null ? labels[selectedIdx] : null;
+
+  return (
+    <div style={{ padding: '6px 6px 2px' }}>
+      {/* Char badges row */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 6 }}>
+        {labels.map((lbl, i) => {
+          const isSelected = i === selectedIdx;
+          const confColor = lbl.confidence > 0.7 ? '#22c55e' : lbl.confidence > 0.4 ? '#f59e0b' : '#ef4444';
+          return (
+            <button
+              key={i}
+              onClick={() => onSelect(i === selectedIdx ? -1 : i)}
+              title={`conf: ${(lbl.confidence * 100).toFixed(0)}%`}
+              style={{
+                fontSize: 14,
+                padding: '2px 7px',
+                borderRadius: 4,
+                border: `2px solid ${isSelected ? '#facc15' : confColor}`,
+                background: isSelected ? 'rgba(250,204,21,0.15)' : 'transparent',
+                color: 'var(--text)',
+                cursor: 'pointer',
+                fontWeight: isSelected ? 700 : 400,
+              }}
+            >
+              {lbl.class_name}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Class selector — shown when a char is selected */}
+      {selected !== null && selectedIdx !== null && (
+        <div
+          style={{
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            padding: '6px 8px',
+          }}
+        >
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>
+            แก้ตัวที่ {selectedIdx + 1}: <strong style={{ color: 'var(--text)' }}>{selected.class_name}</strong>
+            &nbsp;(conf {(selected.confidence * 100).toFixed(0)}%)
+          </div>
+          {/* Digit row */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 4 }}>
+            {DIGIT_OPTIONS.map((d) => (
+              <button key={d} onClick={() => onChange(selectedIdx, d)}
+                style={classBtn(d === selected.class_name)}>{d}</button>
+            ))}
+          </div>
+          {/* Thai char grid */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 4 }}>
+            {THAI_CHAR_OPTIONS.map((ch) => (
+              <button key={ch} onClick={() => onChange(selectedIdx, ch)}
+                style={classBtn(ch === selected.class_name)}>{ch}</button>
+            ))}
+          </div>
+          {/* Province codes */}
+          <details style={{ marginTop: 2 }}>
+            <summary style={{ fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+              Province codes
+            </summary>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 4 }}>
+              {PROVINCE_OPTIONS.map((p) => (
+                <button key={p} onClick={() => onChange(selectedIdx, p)}
+                  style={classBtn(p === selected.class_name, true)}>{p}</button>
+              ))}
+            </div>
+          </details>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function classBtn(active: boolean, small = false): React.CSSProperties {
+  return {
+    fontSize: small ? 10 : 12,
+    padding: small ? '1px 4px' : '2px 6px',
+    borderRadius: 3,
+    border: `1px solid ${active ? '#facc15' : 'var(--border)'}`,
+    background: active ? 'rgba(250,204,21,0.2)' : 'transparent',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    fontWeight: active ? 700 : 400,
+  };
+}
+
+// ── Stats bar chart ───────────────────────────────────────────────────────────
 
 function ClassDistChart({ data }: { data: { class_name: string; count: number }[] }) {
   if (!data.length) return <p style={{ color: 'var(--text-secondary)', fontSize: 12 }}>No approved samples yet.</p>;
@@ -110,20 +244,42 @@ interface SampleCardProps {
   selected: boolean;
   onToggleSelect: () => void;
   onApprove: () => void;
+  onApproveTrack: () => void;
   onReject: () => void;
-  onCorrect: (correctedText: string) => void;
+  onSaveLabels: (charLabels: CharLabel[]) => void;
 }
 
-function SampleCard({ sample, selected, onToggleSelect, onApprove, onReject, onCorrect }: SampleCardProps) {
-  const labels = parsedLabels(sample.char_labels);
-  const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(sample.corrected_text || sample.raw_text || '');
+function SampleCard({
+  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels,
+}: SampleCardProps) {
+  const [labels, setLabels] = useState<CharLabel[]>(() => parsedLabels(sample.char_labels));
+  const [selectedCharIdx, setSelectedCharIdx] = useState<number | null>(null);
+  const [labelsDirty, setLabelsDirty] = useState(false);
+
+  // Sync if parent updates sample
+  useEffect(() => {
+    setLabels(parsedLabels(sample.char_labels));
+    setLabelsDirty(false);
+    setSelectedCharIdx(null);
+  }, [sample.char_labels]);
+
+  const handleCharChange = (idx: number, newClass: string) => {
+    setLabels((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], class_name: newClass };
+      return next;
+    });
+    setLabelsDirty(true);
+    setSelectedCharIdx(null);
+  };
+
+  const handleSelectChar = (idx: number) => {
+    setSelectedCharIdx(idx < 0 ? null : idx);
+  };
 
   const confColor = sample.confidence > 0.7 ? '#22c55e' : sample.confidence > 0.4 ? '#f59e0b' : '#ef4444';
   const statusBadge: Record<string, string> = {
-    pending: '#64748b',
-    approved: '#22c55e',
-    rejected: '#ef4444',
+    pending: '#64748b', approved: '#22c55e', rejected: '#ef4444',
   };
 
   return (
@@ -137,104 +293,84 @@ function SampleCard({ sample, selected, onToggleSelect, onApprove, onReject, onC
         flexDirection: 'column',
       }}
     >
-      {/* header */}
-      <div style={{ display: 'flex', alignItems: 'center', padding: '6px 8px', gap: 6, background: 'var(--bg-secondary)' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', padding: '5px 8px', gap: 6, background: 'var(--bg-secondary)' }}>
         <input type="checkbox" checked={selected} onChange={onToggleSelect} />
         <span style={{ fontSize: 11, fontWeight: 600 }}>{sample.raw_text || '—'}</span>
         <span style={{ marginLeft: 'auto', fontSize: 10, color: confColor }}>
           {(sample.confidence * 100).toFixed(0)}%
         </span>
-        <span
-          style={{
-            fontSize: 10,
-            padding: '1px 5px',
-            borderRadius: 99,
-            background: statusBadge[sample.status] ?? '#64748b',
-            color: '#fff',
-          }}
-        >
+        <span style={{
+          fontSize: 10, padding: '1px 5px', borderRadius: 99,
+          background: statusBadge[sample.status] ?? '#64748b', color: '#fff',
+        }}>
           {sample.status}
         </span>
       </div>
 
-      {/* image canvas */}
-      <div style={{ padding: 6, background: '#000' }}>
+      {/* Canvas */}
+      <div style={{ padding: 4, background: '#000' }}>
         {sample.image_url ? (
-          <PlateCanvas imageUrl={sample.image_url} labels={labels} />
+          <PlateCanvas
+            imageUrl={sample.image_url}
+            labels={labels}
+            selectedIdx={selectedCharIdx}
+            onCharClick={handleSelectChar}
+          />
         ) : (
-          <div style={{ width: 240, height: 80, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 11 }}>
+          <div style={{ width: 280, height: 80, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 11 }}>
             No image
           </div>
         )}
       </div>
 
-      {/* char labels list */}
-      {labels.length > 0 && (
-        <div style={{ padding: '4px 6px', display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-          {labels.map((lbl, i) => (
-            <span
-              key={i}
-              style={{
-                fontSize: 11,
-                padding: '1px 4px',
-                borderRadius: 3,
-                border: '1px solid var(--border)',
-                color: lbl.confidence > 0.7 ? 'var(--text)' : '#f59e0b',
-              }}
-              title={`conf: ${(lbl.confidence * 100).toFixed(0)}%`}
-            >
-              {lbl.class_name}
-            </span>
-          ))}
+      {/* Per-char editor */}
+      <CharLabelEditor
+        labels={labels}
+        selectedIdx={selectedCharIdx}
+        onSelect={handleSelectChar}
+        onChange={handleCharChange}
+      />
+
+      {/* Save labels button — only when dirty */}
+      {labelsDirty && (
+        <div style={{ padding: '0 6px 4px' }}>
+          <button
+            onClick={() => { onSaveLabels(labels); setLabelsDirty(false); }}
+            style={{
+              width: '100%', padding: '4px', fontSize: 12,
+              background: '#d97706', color: '#fff', border: 'none',
+              borderRadius: 4, cursor: 'pointer', fontWeight: 600,
+            }}
+          >
+            💾 Save labels
+          </button>
         </div>
       )}
 
-      {/* correction */}
-      <div style={{ padding: '4px 6px', display: 'flex', gap: 4, alignItems: 'center' }}>
-        {editing ? (
-          <>
-            <input
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              style={{ flex: 1, fontSize: 12, padding: '2px 4px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text)' }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { onCorrect(editText); setEditing(false); }
-                if (e.key === 'Escape') setEditing(false);
-              }}
-              autoFocus
-            />
-            <button onClick={() => { onCorrect(editText); setEditing(false); }} style={{ fontSize: 11, padding: '2px 6px' }}>✓</button>
-            <button onClick={() => setEditing(false)} style={{ fontSize: 11, padding: '2px 6px' }}>✕</button>
-          </>
-        ) : (
-          <button
-            onClick={() => setEditing(true)}
-            style={{ fontSize: 11, padding: '2px 6px', flex: 1, textAlign: 'left', background: 'transparent', border: '1px dashed var(--border)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer' }}
-          >
-            {sample.corrected_text || '✎ correct text'}
-          </button>
-        )}
-      </div>
-
-      {/* action buttons */}
-      <div style={{ display: 'flex', gap: 4, padding: '4px 6px' }}>
-        <button
-          onClick={onApprove}
-          style={{ flex: 1, fontSize: 11, padding: '3px 0', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-        >
+      {/* Action buttons */}
+      <div style={{ display: 'flex', gap: 3, padding: '4px 6px' }}>
+        <button onClick={onApprove}
+          style={{ flex: 1, fontSize: 11, padding: '4px 0', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
           ✓ Approve
         </button>
-        <button
-          onClick={onReject}
-          style={{ flex: 1, fontSize: 11, padding: '3px 0', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-        >
+        <button onClick={onApproveTrack}
+          title="Approve all frames from the same track"
+          style={{ flex: 1, fontSize: 11, padding: '4px 0', background: '#0891b2', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+          ✓✓ Track
+        </button>
+        <button onClick={onReject}
+          style={{ flex: 1, fontSize: 11, padding: '4px 0', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
           ✕ Reject
         </button>
       </div>
 
-      {/* meta */}
+      {/* Meta */}
       <div style={{ fontSize: 10, color: 'var(--text-secondary)', padding: '2px 6px 4px' }}>
         {sample.camera_name} · {new Date(sample.detected_at).toLocaleString()}
+        {sample.track_id && (
+          <span style={{ marginLeft: 6, opacity: 0.5 }}>#{sample.track_id.slice(0, 8)}</span>
+        )}
       </div>
     </div>
   );
@@ -280,7 +416,6 @@ export default function TrainingReview() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadStats(); }, [loadStats]);
 
-  // Refresh export preview count whenever filters change
   useEffect(() => {
     trainingApi.exportPreview('approved', confMax ? Number(confMax) : undefined)
       .then((r) => setExportCount(r.total))
@@ -291,13 +426,24 @@ export default function TrainingReview() {
     await trainingApi.update(id, { status: 'approved' });
     load(); loadStats();
   };
+
+  const handleApproveTrack = async (trackId: string) => {
+    if (!trackId) return;
+    await trainingApi.approveTrack(trackId, 'approved');
+    load(); loadStats();
+  };
+
   const handleReject = async (id: number) => {
     await trainingApi.update(id, { status: 'rejected' });
     load(); loadStats();
   };
-  const handleCorrect = async (id: number, correctedText: string) => {
-    await trainingApi.update(id, { corrected_text: correctedText, status: 'approved' });
-    load(); loadStats();
+
+  const handleSaveLabels = async (id: number, charLabels: CharLabel[]) => {
+    await trainingApi.update(id, { char_labels: JSON.stringify(charLabels) });
+    // no full reload needed — just update local state
+    setSamples((prev) =>
+      prev.map((s) => s.id === id ? { ...s, char_labels: JSON.stringify(charLabels) } : s)
+    );
   };
 
   const handleBulkApprove = async () => {
@@ -306,6 +452,7 @@ export default function TrainingReview() {
     setSelectedIds(new Set());
     load(); loadStats();
   };
+
   const handleBulkReject = async () => {
     if (!selectedIds.size) return;
     await trainingApi.bulkUpdate([...selectedIds], 'rejected');
@@ -335,7 +482,6 @@ export default function TrainingReview() {
 
   return (
     <div style={{ padding: '16px 20px' }}>
-      {/* Page title */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
         <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Training Review</h1>
         <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -343,7 +489,7 @@ export default function TrainingReview() {
         </span>
       </div>
 
-      {/* Stats bar */}
+      {/* Stats summary */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: 8 }}>
           {[
@@ -354,12 +500,8 @@ export default function TrainingReview() {
             <div
               key={label}
               style={{
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 8,
-                padding: '6px 14px',
-                textAlign: 'center',
-                cursor: 'pointer',
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: 8, padding: '6px 14px', textAlign: 'center', cursor: 'pointer',
               }}
               onClick={() => setStatusFilter(statusFilter === label.toLowerCase() ? '' : label.toLowerCase())}
             >
@@ -376,7 +518,6 @@ export default function TrainingReview() {
           {showStats ? 'Hide' : 'Show'} Class Distribution
         </button>
 
-        {/* Export button */}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
           {exportCount !== null && (
             <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -387,13 +528,8 @@ export default function TrainingReview() {
             href={trainingApi.exportUrl('approved', confMax ? Number(confMax) : undefined)}
             download
             style={{
-              padding: '7px 14px',
-              background: 'var(--accent)',
-              color: '#fff',
-              borderRadius: 6,
-              fontSize: 12,
-              fontWeight: 600,
-              textDecoration: 'none',
+              padding: '7px 14px', background: 'var(--accent)', color: '#fff',
+              borderRadius: 6, fontSize: 12, fontWeight: 600, textDecoration: 'none',
             }}
           >
             Export ZIP
@@ -401,25 +537,15 @@ export default function TrainingReview() {
         </div>
       </div>
 
-      {/* Class distribution chart */}
+      {/* Class distribution */}
       {showStats && stats && (
-        <div
-          style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            padding: '12px 16px',
-            marginBottom: 12,
-          }}
-        >
-          <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600 }}>
-            Class distribution (approved samples)
-          </p>
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', marginBottom: 12 }}>
+          <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600 }}>Class distribution (approved samples)</p>
           <ClassDistChart data={stats.by_class} />
         </div>
       )}
 
-      {/* Filters + bulk actions */}
+      {/* Filters + bulk */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <select
           value={statusFilter}
@@ -435,10 +561,7 @@ export default function TrainingReview() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Conf ≤</label>
           <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
+            type="number" min={0} max={1} step={0.05}
             value={confMax}
             onChange={(e) => { setConfMax(e.target.value); setPage(1); }}
             placeholder="max conf"
@@ -449,16 +572,12 @@ export default function TrainingReview() {
         {selectedIds.size > 0 && (
           <>
             <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{selectedIds.size} selected</span>
-            <button
-              onClick={handleBulkApprove}
-              style={{ padding: '5px 10px', fontSize: 12, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
-            >
+            <button onClick={handleBulkApprove}
+              style={{ padding: '5px 10px', fontSize: 12, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Approve all
             </button>
-            <button
-              onClick={handleBulkReject}
-              style={{ padding: '5px 10px', fontSize: 12, background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
-            >
+            <button onClick={handleBulkReject}
+              style={{ padding: '5px 10px', fontSize: 12, background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Reject all
             </button>
           </>
@@ -472,6 +591,12 @@ export default function TrainingReview() {
         </button>
       </div>
 
+      {/* Legend */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 10, fontSize: 11, color: 'var(--text-secondary)' }}>
+        <span>คลิกตัวอักษรบน canvas หรือ badge เพื่อแก้ label &nbsp;·&nbsp;</span>
+        <span style={{ color: '#0891b2' }}>✓✓ Track = approve ทุก frame ในกลุ่มเดียวกัน</span>
+      </div>
+
       {/* Grid */}
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
@@ -482,13 +607,7 @@ export default function TrainingReview() {
           No training samples found.
         </div>
       ) : (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-            gap: 12,
-          }}
-        >
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
           {samples.map((s) => (
             <SampleCard
               key={s.id}
@@ -496,8 +615,9 @@ export default function TrainingReview() {
               selected={selectedIds.has(s.id)}
               onToggleSelect={() => toggleSelect(s.id)}
               onApprove={() => handleApprove(s.id)}
+              onApproveTrack={() => handleApproveTrack(s.track_id)}
               onReject={() => handleReject(s.id)}
-              onCorrect={(text) => handleCorrect(s.id, text)}
+              onSaveLabels={(labels) => handleSaveLabels(s.id, labels)}
             />
           ))}
         </div>
@@ -506,21 +626,13 @@ export default function TrainingReview() {
       {/* Pagination */}
       {totalPages > 1 && (
         <div style={{ display: 'flex', gap: 6, marginTop: 16, justifyContent: 'center', alignItems: 'center' }}>
-          <button
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-            style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', cursor: page <= 1 ? 'not-allowed' : 'pointer', background: 'var(--bg-card)', color: 'var(--text)' }}
-          >
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
+            style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', cursor: page <= 1 ? 'not-allowed' : 'pointer', background: 'var(--bg-card)', color: 'var(--text)' }}>
             ‹
           </button>
-          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-            {page} / {totalPages}
-          </span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => setPage((p) => p + 1)}
-            style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', cursor: page >= totalPages ? 'not-allowed' : 'pointer', background: 'var(--bg-card)', color: 'var(--text)' }}
-          >
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{page} / {totalPages}</span>
+          <button disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}
+            style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', cursor: page >= totalPages ? 'not-allowed' : 'pointer', background: 'var(--bg-card)', color: 'var(--text)' }}>
             ›
           </button>
         </div>

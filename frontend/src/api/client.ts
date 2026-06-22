@@ -376,6 +376,7 @@ export interface TrainingSample {
   id: number;
   camera_id: number;
   camera_name: string;
+  track_id: string;
   image_url: string;
   char_labels: string; // JSON string → CharLabel[]
   raw_text: string;
@@ -431,6 +432,13 @@ export const trainingApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids, status }),
+    }),
+
+  approveTrack: (trackId: string, status: string): Promise<{ updated: number; track_id: string }> =>
+    request(`/training/plates/track/${encodeURIComponent(trackId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
     }),
 
   stats: (): Promise<TrainingStats> =>

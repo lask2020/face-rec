@@ -446,6 +446,7 @@ def flush_plate_track(track: PlateTrack, send_queue):
             char_labels_json=_char_labels_json(fr.chars),
             confidence=fr.confidence,
             raw_text=fr.raw_text,
+            track_id=track.track_id,
         )
         for fr in candidates[:TRAINING_MAX_FRAMES_PER_TRACK]
     ]

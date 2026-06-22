@@ -66,6 +66,7 @@ func main() {
 	api.Get("/training/plates/stats", getTrainingStats)
 	api.Get("/training/plates/export", exportTrainingZip)
 	api.Get("/training/plates/export/preview", getExportPreview)
+	api.Put("/training/plates/track/:track_id", updateTrainingTrack)
 	api.Get("/training/plates/:id", getTrainingSample)
 	api.Put("/training/plates/:id", updateTrainingSample)
 	api.Post("/training/plates/bulk", bulkUpdateTrainingSamples)

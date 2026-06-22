@@ -332,6 +332,7 @@ type PlateTrainingFrame struct {
 	CharLabelsJson string                 `protobuf:"bytes,2,opt,name=char_labels_json,json=charLabelsJson,proto3" json:"char_labels_json,omitempty"` // JSON: [{class_name,cx,cy,bw,bh,confidence}]
 	Confidence     float32                `protobuf:"fixed32,3,opt,name=confidence,proto3" json:"confidence,omitempty"`
 	RawText        string                 `protobuf:"bytes,4,opt,name=raw_text,json=rawText,proto3" json:"raw_text,omitempty"`
+	TrackId        string                 `protobuf:"bytes,5,opt,name=track_id,json=trackId,proto3" json:"track_id,omitempty"` // stable UUID for the PlateTrack that generated this frame
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -394,6 +395,13 @@ func (x *PlateTrainingFrame) GetRawText() string {
 	return ""
 }
 
+func (x *PlateTrainingFrame) GetTrackId() string {
+	if x != nil {
+		return x.TrackId
+	}
+	return ""
+}
+
 var File_facerec_proto protoreflect.FileDescriptor
 
 const file_facerec_proto_rawDesc = "" +
@@ -429,14 +437,15 @@ const file_facerec_proto_rawDesc = "" +
 	"plate_type\x18\x04 \x01(\tR\tplateType\x12\x1a\n" +
 	"\bprovince\x18\x05 \x01(\tR\bprovince\x12\x19\n" +
 	"\braw_text\x18\x06 \x01(\tR\arawText\x12(\n" +
-	"\x10char_labels_json\x18\a \x01(\tR\x0echarLabelsJson\"\x96\x01\n" +
+	"\x10char_labels_json\x18\a \x01(\tR\x0echarLabelsJson\"\xb1\x01\n" +
 	"\x12PlateTrainingFrame\x12\x1b\n" +
 	"\tcrop_jpeg\x18\x01 \x01(\fR\bcropJpeg\x12(\n" +
 	"\x10char_labels_json\x18\x02 \x01(\tR\x0echarLabelsJson\x12\x1e\n" +
 	"\n" +
 	"confidence\x18\x03 \x01(\x02R\n" +
 	"confidence\x12\x19\n" +
-	"\braw_text\x18\x04 \x01(\tR\arawText2Y\n" +
+	"\braw_text\x18\x04 \x01(\tR\arawText\x12\x19\n" +
+	"\btrack_id\x18\x05 \x01(\tR\atrackId2Y\n" +
 	"\x14FaceInferenceService\x12A\n" +
 	"\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x010\x01B\vZ\t./facerecb\x06proto3"
 

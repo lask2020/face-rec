@@ -95,6 +95,7 @@ type PlateTrainingSample struct {
 	ID            uint      `gorm:"primaryKey" json:"id"`
 	CameraID      uint      `gorm:"not null;index" json:"camera_id"`
 	CameraName    string    `gorm:"size:255;default:''" json:"camera_name"`
+	TrackID       string    `gorm:"size:64;default:'';index" json:"track_id"` // groups frames from the same PlateTrack
 	ImagePath     string    `gorm:"size:512" json:"-"`          // S3 key — never mutated after save
 	ImageURL      string    `gorm:"-" json:"image_url"`         // computed by AfterFind
 	CharLabels    string    `gorm:"type:text;default:'[]'" json:"char_labels"` // JSON array

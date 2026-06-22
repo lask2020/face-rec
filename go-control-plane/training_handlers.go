@@ -137,6 +137,7 @@ func saveTrainingFrames(ctx context.Context, frames []*facerec.PlateTrainingFram
 		sample := PlateTrainingSample{
 			CameraID:   task.CameraID,
 			CameraName: cam.Name,
+			TrackID:    frame.TrackId,
 			CharLabels: frame.CharLabelsJson,
 			RawText:    frame.RawText,
 			Confidence: float64(frame.Confidence),
@@ -277,6 +278,35 @@ func bulkUpdateTrainingSamples(c *fiber.Ctx) error {
 	}
 	result := DB.Model(&PlateTrainingSample{}).Where("id IN ?", body.IDs).Updates(updates)
 	return c.JSON(fiber.Map{"updated": result.RowsAffected})
+}
+
+func updateTrainingTrack(c *fiber.Ctx) error {
+	trackID := c.Params("track_id")
+	if trackID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "track_id required"})
+	}
+
+	var body struct {
+		Status        string `json:"status"`
+		CorrectedText string `json:"corrected_text"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	updates := map[string]interface{}{}
+	if body.Status != "" {
+		updates["status"] = body.Status
+	}
+	if body.CorrectedText != "" {
+		updates["corrected_text"] = body.CorrectedText
+	}
+	if len(updates) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "nothing to update"})
+	}
+
+	result := DB.Model(&PlateTrainingSample{}).Where("track_id = ?", trackID).Updates(updates)
+	return c.JSON(fiber.Map{"updated": result.RowsAffected, "track_id": trackID})
 }
 
 func getTrainingStats(c *fiber.Ctx) error {
