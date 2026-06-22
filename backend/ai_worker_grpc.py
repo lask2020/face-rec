@@ -24,7 +24,7 @@ from app.face_engine import face_engine, compute_sharpness, SHARPNESS_THRESHOLD
 from app.face_restorer import face_restorer
 from app.license_plate import LicensePlateEngine, PlateResult
 
-license_plate_engine = LicensePlateEngine()
+license_plate_engine: LicensePlateEngine | None = None
 
 # FFHQ 5-point landmark template for 512×512.
 # CodeFormer (and GFPGAN) were trained exclusively on FFHQ-aligned crops; using
@@ -342,7 +342,7 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
             faces = []
 
             # Run plate detection when mode is "plate" or "both"
-            if detect_mode in ("plate", "both") and license_plate_engine.ready:
+            if detect_mode in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
                 plate_results: list[PlateResult] = license_plate_engine.detect(img)
                 for pr in plate_results:
                     plate_proto_list.append(facerec_pb2.PlateDetection(
@@ -425,17 +425,19 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
 
 
 def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None):
+    global license_plate_engine
+
     if control_plane_url is None:
         control_plane_url = os.getenv("CONTROL_PLANE_URL", "localhost:50051")
-        
+
     if onnx_provider:
         os.environ["ONNX_PROVIDER"] = onnx_provider
-    
+
     # Initialize InsightFace model
     logger.info("Initializing Face Engine...")
     face_engine.initialize()
     logger.info("Face Engine initialized successfully.")
-    
+
     # Initialize CodeFormer Face Restorer
     logger.info("Initializing Face Restorer (CodeFormer)...")
     face_restorer.initialize()
@@ -443,6 +445,14 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
         logger.info("Face Restorer initialized successfully.")
     else:
         logger.warning("Face Restorer disabled (model not found or load failed).")
+
+    # Initialize License Plate Engine
+    logger.info("Initializing License Plate Engine...")
+    license_plate_engine = LicensePlateEngine()
+    if license_plate_engine.ready:
+        logger.info("License Plate Engine initialized successfully.")
+    else:
+        logger.warning("License Plate Engine disabled (models not found).")
 
     def sleep_interruptible(seconds):
         steps = int(seconds / 0.2)
