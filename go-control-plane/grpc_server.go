@@ -721,82 +721,97 @@ func StartFrameDispatcher(ctx context.Context) {
 		}
 
 		for _, stream := range res {
+			// Deduplicate the batch by camera: keep only the latest message per camera.
+			// When the dispatcher reads 10 frames at once, older frames of the same
+			// camera are stale — sending all of them floods the AI worker's thread
+			// pool with out-of-order frames that break plate track continuity.
+			type parsedMsg struct {
+				msgID    string
+				cameraID uint
+				ts       int64
+				data     []byte
+			}
+
+			// Parse all messages and bucket by camera
+			latestByCam := make(map[uint]*parsedMsg)
+			allMsgIDs := make([]string, 0, len(stream.Messages))
+
 			for _, msg := range stream.Messages {
-				var cameraID uint
-				var ts int64
-				var data []byte
+				p := &parsedMsg{msgID: msg.ID}
+				allMsgIDs = append(allMsgIDs, msg.ID)
 
-				// Safe parsing camera_id
 				if val, ok := msg.Values["camera_id"].(string); ok {
-					cid, _ := fmt.Sscanf(val, "%d", &cameraID)
-					if cid == 0 {
-						// fallback
-						var valInt int
-						fmt.Sscanf(val, "%d", &valInt)
-						cameraID = uint(valInt)
-					}
+					var valInt int
+					fmt.Sscanf(val, "%d", &valInt)
+					p.cameraID = uint(valInt)
 				} else if val, ok := msg.Values["camera_id"].(int64); ok {
-					cameraID = uint(val)
+					p.cameraID = uint(val)
 				}
 
-				// Safe parsing ts
 				if val, ok := msg.Values["ts"].(string); ok {
-					fmt.Sscanf(val, "%d", &ts)
+					fmt.Sscanf(val, "%d", &p.ts)
 				} else if val, ok := msg.Values["ts"].(int64); ok {
-					ts = val
+					p.ts = val
 				}
 
-				// Safe parsing data
 				if val, ok := msg.Values["data"].(string); ok {
-					data = []byte(val)
+					p.data = []byte(val)
 				} else if val, ok := msg.Values["data"].([]byte); ok {
-					data = val
+					p.data = val
 				}
 
-				// Dispatch sticky worker by camera ID
-				worker := getWorkerForCamera(cameraID)
+				// Redis Stream IDs are lexicographically ordered by time —
+				// a later ID always supersedes an earlier one for the same camera.
+				if prev, ok := latestByCam[p.cameraID]; !ok || p.msgID > prev.msgID {
+					latestByCam[p.cameraID] = p
+				}
+			}
+
+			// ACK + delete ALL messages in the batch upfront (including dropped ones).
+			if len(allMsgIDs) > 0 {
+				RDB.XAck(ctx, streamName, groupName, allMsgIDs...)
+				RDB.XDel(ctx, streamName, allMsgIDs...)
+			}
+
+			skipped := len(stream.Messages) - len(latestByCam)
+			if skipped > 0 {
+				log.Printf("[Dispatcher] Batch dedup: kept %d frames (%d stale dropped)", len(latestByCam), skipped)
+			}
+
+			// Dispatch only the latest frame per camera
+			for _, p := range latestByCam {
+				worker := getWorkerForCamera(p.cameraID)
 				if worker == nil {
-					log.Printf("[Dispatcher] No worker available for camera %d, skipped frame.", cameraID)
+					log.Printf("[Dispatcher] No worker available for camera %d, skipped frame.", p.cameraID)
 					continue
 				}
 
-				taskID := fmt.Sprintf("%d_%d_%s", cameraID, ts, uuid.New().String())
+				taskID := fmt.Sprintf("%d_%d_%s", p.cameraID, p.ts, uuid.New().String())
 
-				// Register pending task
 				pendingTasksMu.Lock()
 				pendingTasks[taskID] = PendingTask{
-					CameraID:   cameraID,
-					Timestamp:  ts,
-					ImageBytes: data,
+					CameraID:   p.cameraID,
+					Timestamp:  p.ts,
+					ImageBytes: p.data,
 				}
 				pendingTasksMu.Unlock()
 
-				// Clean up pending task after timeout using a timer (avoids spawning
-				// a goroutine per frame, which would accumulate thousands of sleeping goroutines).
 				time.AfterFunc(30*time.Second, func() {
 					pendingTasksMu.Lock()
 					delete(pendingTasks, taskID)
 					pendingTasksMu.Unlock()
 				})
 
-				// Look up camera detect_mode from in-memory cache (refreshes every 8 s).
-				detectMode := getCachedDetectMode(cameraID)
+				detectMode := getCachedDetectMode(p.cameraID)
 
-				// Acknowledge Redis Stream message before dispatch so the
-				// read loop is never blocked by a slow or overloaded worker.
-				RDB.XAck(ctx, streamName, groupName, msg.ID)
-				RDB.XDel(ctx, streamName, msg.ID)
-
-				// Enqueue frame to the worker's send channel (non-blocking).
-				// senderLoop owns the stream.Send call, so this is thread-safe.
 				sent := worker.trySend(&facerec.FrameTask{
 					TaskId:         taskID,
-					ImageData:      data,
+					ImageData:      p.data,
 					IsRegistration: false,
 					DetectMode:     detectMode,
 				})
 				if !sent {
-					log.Printf("[Dispatcher] Worker %s overloaded or disconnected — dropping frame for camera %d", worker.id, cameraID)
+					log.Printf("[Dispatcher] Worker %s overloaded or disconnected — dropping frame for camera %d", worker.id, p.cameraID)
 					pendingTasksMu.Lock()
 					delete(pendingTasks, taskID)
 					pendingTasksMu.Unlock()

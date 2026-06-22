@@ -191,22 +191,6 @@ def _plate_boxes_match(a: list[float], b: list[float]) -> bool:
     return dist < avg_w * 0.8
 
 
-# Per-camera lock for plate detection + tracking.
-# The thread pool processes multiple cameras in parallel, but frames from the
-# SAME camera must be serialized so the tracker always sees consecutive bboxes.
-# Without this, batch-dispatched frames for one camera arrive at the thread pool
-# almost simultaneously; whichever thread wins the race creates a new track
-# instead of updating the existing one.
-_camera_plate_locks: dict[int, threading.Lock] = {}
-_camera_plate_locks_guard = threading.Lock()
-
-def _get_camera_plate_lock(camera_id: int) -> threading.Lock:
-    with _camera_plate_locks_guard:
-        if camera_id not in _camera_plate_locks:
-            _camera_plate_locks[camera_id] = threading.Lock()
-        return _camera_plate_locks[camera_id]
-
-
 # Active tracks and cooldown state
 active_tracks = {}
 tracks_lock = threading.Lock()
@@ -556,30 +540,25 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
 
             faces = []
 
-            # Run plate detection when mode is "plate" or "both".
-            # Acquire a per-camera lock that covers BOTH inference and tracking so
-            # that consecutive frames from the same camera are always processed in
-            # arrival order — prevents the thread pool from racing two frames
-            # through detection simultaneously and creating duplicate tracks.
+            # Run plate detection when mode is "plate" or "both"
             if detect_mode not in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
                 logger.debug(f"Camera {camera_id}: skipping plate detection (detect_mode='{detect_mode}')")
             if detect_mode in ("plate", "both") and license_plate_engine is not None and license_plate_engine.ready:
-                with _get_camera_plate_lock(camera_id):
-                    plate_results: list[PlateResult] = license_plate_engine.detect(img)
-                    if plate_results:
-                        logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame raw={[p.raw_text for p in plate_results]}")
-                    with plate_tracks_lock:
-                        for pr in plate_results:
-                            matched_pt = None
-                            for pt in active_plate_tracks.values():
-                                if pt.camera_id == camera_id and _plate_boxes_match(pt.last_bbox, pr.bbox):
-                                    matched_pt = pt
-                                    break
-                            if matched_pt:
-                                matched_pt.update(pr, task_id)
-                            else:
-                                new_pt = PlateTrack(camera_id, pr, task_id)
-                                active_plate_tracks[new_pt.track_id] = new_pt
+                plate_results: list[PlateResult] = license_plate_engine.detect(img)
+                if plate_results:
+                    logger.info(f"Camera {camera_id}: detected {len(plate_results)} plate(s) this frame raw={[p.raw_text for p in plate_results]}")
+                with plate_tracks_lock:
+                    for pr in plate_results:
+                        matched_pt = None
+                        for pt in active_plate_tracks.values():
+                            if pt.camera_id == camera_id and _plate_boxes_match(pt.last_bbox, pr.bbox):
+                                matched_pt = pt
+                                break
+                        if matched_pt:
+                            matched_pt.update(pr, task_id)
+                        else:
+                            new_pt = PlateTrack(camera_id, pr, task_id)
+                            active_plate_tracks[new_pt.track_id] = new_pt
 
             # Run face detection when mode is "face" or "both"
             if detect_mode in ("face", "both"):
