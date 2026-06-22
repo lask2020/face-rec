@@ -128,6 +128,10 @@ class PlateTrack:
         self.camera_id  = camera_id
         self.track_id   = str(uuid.uuid4())
         self.best       = plate_result
+        # Most recent bbox — used for spatial (IoU) matching. Kept separate
+        # from best.bbox because a moving plate shifts position every frame
+        # while best stays frozen on the best-OCR frame.
+        self.last_bbox  = plate_result.bbox
         self.task_id    = task_id
         self.hit_count  = 1
         self.first_seen = time.time()
@@ -149,6 +153,8 @@ class PlateTrack:
             self.best    = plate_result
             self.task_id = task_id
 
+        # Follow the plate's current position regardless of OCR quality.
+        self.last_bbox = plate_result.bbox
         self.last_seen = time.time()
         self.hit_count += 1
 
@@ -477,7 +483,7 @@ def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
                     for pr in plate_results:
                         matched_pt = None
                         for pt in active_plate_tracks.values():
-                            if pt.camera_id == camera_id and _iou(pt.best.bbox, pr.bbox) >= PLATE_IOU_THRESH:
+                            if pt.camera_id == camera_id and _iou(pt.last_bbox, pr.bbox) >= PLATE_IOU_THRESH:
                                 matched_pt = pt
                                 break
                         if matched_pt:
