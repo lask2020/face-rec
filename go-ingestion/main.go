@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -135,111 +137,104 @@ func registerStream(name, sourceURL string) error {
 	return nil
 }
 
-// captureLoop periodically grabs a snapshot from go2rtc and pushes it to Redis.
+// captureLoop consumes a continuous MJPEG stream from go2rtc and forwards frames
+// to Redis. It maintains ONE long-lived connection per camera instead of polling
+// frame.jpeg repeatedly.
 //
-// This is extremely CPU-efficient because:
-// 1. go2rtc handles the RTSP connection (persistent, no reconnection overhead)
-// 2. go2rtc decodes exactly 1 frame when snapshot is requested
-// 3. The ingestion worker just does an HTTP GET — no ffmpeg subprocess needed
+// Why a stream instead of snapshot polling:
+//   - frame.jpeg is an on-demand decode; polling it at high fps (e.g. 12) makes
+//     go2rtc decode-per-request, fall behind, serve stale duplicate frames, and
+//     eventually freeze.
+//   - stream.mjpeg lets go2rtc decode once at source rate and push frames to us.
+//     We read fresh frames continuously and throttle pushes to the desired fps.
 func captureLoop(ctx context.Context, camID uint, streamName string, intervalMs int) {
-	log.Printf("[Camera %d] Starting snapshot capture every %dms from go2rtc stream '%s'", camID, intervalMs, streamName)
+	log.Printf("[Camera %d] Starting MJPEG capture (target %dms interval) from go2rtc stream '%s'", camID, intervalMs, streamName)
 
-	// Keep the go2rtc RTSP connection warm with a persistent consumer.
-	// This is what makes frame.jpeg return instantly from go2rtc's buffer — without
-	// it, every snapshot forces go2rtc to cold-start the RTSP pull, which is slow.
-	// The consumer MUST auto-reconnect: a single network blip would otherwise kill
-	// it permanently and every subsequent snapshot would lag.
-	go keepStreamWarm(ctx, camID, streamName)
-
-	// Use a Ticker so the interval is measured from the START of each cycle,
-	// not from after the fetch+push complete. This keeps FPS accurate regardless
-	// of how long the HTTP snapshot request takes.
-	ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
-	defer ticker.Stop()
-
-	// Snapshot timeout is kept tight (relative to the capture interval) so a single
-	// stalled fetch can't freeze this camera's loop for many seconds.
-	client := &http.Client{Timeout: 5 * time.Second}
-	snapshotURL := fmt.Sprintf("%s/api/frame.jpeg?src=%s", go2rtcURL, streamName)
+	mjpegURL := fmt.Sprintf("%s/api/stream.mjpeg?src=%s", go2rtcURL, streamName)
+	minInterval := time.Duration(intervalMs) * time.Millisecond
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("[Camera %d] Capture stopped.", camID)
 			return
-		case <-ticker.C:
-		}
-
-		frame, err := fetchSnapshot(client, snapshotURL)
-		if err != nil {
-			log.Printf("[Camera %d] Snapshot failed: %v", camID, err)
-			continue
-		}
-
-		// Always update live-preview for the UI
-		rdb.Set(ctx, fmt.Sprintf("camera:latest:%d", camID), frame, 10*time.Second)
-
-		pushFrameToAIQueue(ctx, camID, frame)
-	}
-}
-
-// keepStreamWarm holds a long-lived consumer on the go2rtc stream so the RTSP
-// source stays connected and decoded frames are always ready for snapshotting.
-// It reconnects automatically until the camera's context is cancelled.
-func keepStreamWarm(ctx context.Context, camID uint, streamName string) {
-	url := fmt.Sprintf("%s/api/stream.mp4?src=%s", go2rtcURL, streamName)
-	for {
-		select {
-		case <-ctx.Done():
-			return
 		default:
 		}
 
-		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			// Stream not ready yet (or go2rtc restarting) — back off and retry.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
-			continue
+		err := streamMJPEG(ctx, camID, mjpegURL, minInterval)
+		if ctx.Err() != nil {
+			log.Printf("[Camera %d] Capture stopped.", camID)
+			return
 		}
-		// Drain until the connection drops, then loop to reconnect.
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
+		log.Printf("[Camera %d] MJPEG stream ended (%v). Reconnecting in 2s...", camID, err)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(1 * time.Second):
+		case <-time.After(2 * time.Second):
 		}
 	}
 }
 
-// fetchSnapshot grabs a single JPEG frame from go2rtc's snapshot API
-func fetchSnapshot(client *http.Client, url string) ([]byte, error) {
-	resp, err := client.Get(url)
+// streamMJPEG opens a single MJPEG (multipart/x-mixed-replace) connection and
+// reads JPEG frames until the stream errors or stalls. It throttles forwarding
+// to minInterval (the configured fps) while keeping the connection drained so
+// go2rtc never backs up. A watchdog reconnects if go2rtc freezes mid-stream.
+func streamMJPEG(parentCtx context.Context, camID uint, url string, minInterval time.Duration) error {
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := http.DefaultClient.Do(req) // no client timeout — this is a long-lived stream
 	if err != nil {
-		return nil, fmt.Errorf("HTTP error: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("go2rtc returned %d", resp.StatusCode)
+		return fmt.Errorf("go2rtc returned %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read error: %w", err)
+	mediaType, params, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
+		return fmt.Errorf("not a multipart stream: %q", resp.Header.Get("Content-Type"))
 	}
+	mr := multipart.NewReader(resp.Body, params["boundary"])
 
-	if len(data) < 100 {
-		return nil, fmt.Errorf("frame too small (%d bytes)", len(data))
+	// Watchdog: if no frame arrives within stallTimeout, cancel the request so the
+	// blocked read unblocks and the caller reconnects. Recovers from go2rtc freezes.
+	const stallTimeout = 5 * time.Second
+	watchdog := time.AfterFunc(stallTimeout, cancel)
+	defer watchdog.Stop()
+
+	var lastPush time.Time
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			return err
+		}
+		frame, err := io.ReadAll(part)
+		part.Close()
+		if err != nil {
+			return err
+		}
+		watchdog.Reset(stallTimeout)
+
+		if len(frame) < 100 {
+			continue
+		}
+
+		// Throttle forwarding to the configured fps. We still read every part above
+		// so the TCP stream stays drained and go2rtc keeps delivering fresh frames.
+		now := time.Now()
+		if now.Sub(lastPush) < minInterval {
+			continue
+		}
+		lastPush = now
+
+		// Live preview for the UI
+		rdb.Set(ctx, fmt.Sprintf("camera:latest:%d", camID), frame, 10*time.Second)
+		pushFrameToAIQueue(ctx, camID, frame)
 	}
-
-	return data, nil
 }
 
 // pushFrameToAIQueue pushes a JPEG frame to the AI processing stream.
