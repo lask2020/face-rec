@@ -53,6 +53,7 @@ func UpdateCamera(c *fiber.Ctx) error {
 	}
 
 	DB.Save(&camera)
+	InvalidateDetectModeCache(camera.ID)
 	return c.JSON(camera)
 }
 

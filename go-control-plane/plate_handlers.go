@@ -16,6 +16,38 @@ import (
 
 // ── REST Handlers ─────────────────────────────────────────────────────────────
 
+func clearAllPlateDetections(c *fiber.Ctx) error {
+	// 1. Collect all snapshot S3 keys before deleting rows
+	var paths []string
+	DB.Model(&PlateDetectionLog{}).
+		Where("snapshot_path != ''").
+		Pluck("snapshot_path", &paths)
+
+	// 2. Delete S3 objects (non-fatal — log errors and continue)
+	if S3Client != nil {
+		for _, p := range paths {
+			// paths are stored as "/api/static/snapshots/<filename>" — extract just the key
+			key := p
+			const prefix = "/api/static/snapshots/"
+			if len(p) > len(prefix) {
+				key = p[len(prefix):]
+			}
+			if err := S3Client.RemoveObject(c.Context(), SnapshotsBucket, key, minio.RemoveObjectOptions{}); err != nil {
+				log.Printf("[ClearPlates] Failed to delete S3 object %s: %v", key, err)
+			}
+		}
+	}
+
+	// 3. Delete all rows
+	result := DB.Where("1 = 1").Delete(&PlateDetectionLog{})
+	if result.Error != nil {
+		return c.Status(500).JSON(fiber.Map{"error": result.Error.Error()})
+	}
+
+	log.Printf("[ClearPlates] Deleted %d plate detection records and %d S3 snapshots", result.RowsAffected, len(paths))
+	return c.JSON(fiber.Map{"deleted": result.RowsAffected})
+}
+
 func listPlateDetections(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "20"))

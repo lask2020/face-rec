@@ -59,6 +59,7 @@ func main() {
 	// License Plate Detections
 	api.Get("/plate-detections", listPlateDetections)
 	api.Get("/plate-detections/stats", getPlateDetectionStats)
+	api.Delete("/plate-detections", clearAllPlateDetections)
 
 	// Workers
 	api.Get("/workers", GetWorkers)

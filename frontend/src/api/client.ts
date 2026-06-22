@@ -249,6 +249,9 @@ export const api = {
   getPlateDetectionStats: () =>
     request<PlateDetectionStats>('/plate-detections/stats'),
 
+  clearPlateDetections: () =>
+    request<{ deleted: number }>('/plate-detections', { method: 'DELETE' }),
+
   // Workers
   listWorkers: () =>
     request<WorkerList>('/workers'),

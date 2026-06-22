@@ -19,6 +19,45 @@ import (
 	facerec "github.com/face-rec/go-control-plane/facerec"
 )
 
+// detectModeCache caches camera detect_mode values so the dispatcher doesn't
+// hit the DB on every frame. Entries are refreshed lazily after cacheTTL.
+var (
+	detectModeCache   = make(map[uint]detectModeCacheEntry)
+	detectModeCacheMu sync.Mutex
+	cacheTTL          = 8 * time.Second
+)
+
+type detectModeCacheEntry struct {
+	mode      string
+	expiresAt time.Time
+}
+
+func getCachedDetectMode(cameraID uint) string {
+	detectModeCacheMu.Lock()
+	defer detectModeCacheMu.Unlock()
+
+	if entry, ok := detectModeCache[cameraID]; ok && time.Now().Before(entry.expiresAt) {
+		return entry.mode
+	}
+
+	// Cache miss or expired — query DB and refresh
+	var cam Camera
+	mode := "face"
+	if DB.Select("detect_mode").First(&cam, cameraID).Error == nil && cam.DetectMode != "" {
+		mode = cam.DetectMode
+	}
+	detectModeCache[cameraID] = detectModeCacheEntry{mode: mode, expiresAt: time.Now().Add(cacheTTL)}
+	return mode
+}
+
+// InvalidateDetectModeCache removes a single camera from the cache so the next
+// frame picks up any detect_mode change immediately (call this after UpdateCamera).
+func InvalidateDetectModeCache(cameraID uint) {
+	detectModeCacheMu.Lock()
+	delete(detectModeCache, cameraID)
+	detectModeCacheMu.Unlock()
+}
+
 type AIWorkerSession struct {
 	stream       facerec.FaceInferenceService_ProcessStreamServer
 	id           string
@@ -663,12 +702,14 @@ func StartFrameDispatcher(ctx context.Context) {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// 2. Consume frame from Redis Stream
+		// 2. Consume a batch of frames from Redis Stream.
+		// Reading N at once amortizes the round-trip cost — especially important
+		// when multiple cameras push frames concurrently.
 		res, err := RDB.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    groupName,
 			Consumer: consumerName,
 			Streams:  []string{streamName, ">"},
-			Count:    1,
+			Count:    10,
 			Block:    2000 * time.Millisecond,
 		}).Result()
 
@@ -738,12 +779,8 @@ func StartFrameDispatcher(ctx context.Context) {
 					pendingTasksMu.Unlock()
 				})
 
-				// Look up camera detect_mode
-				detectMode := "face"
-				var camForMode Camera
-				if DB.First(&camForMode, cameraID).Error == nil && camForMode.DetectMode != "" {
-					detectMode = camForMode.DetectMode
-				}
+				// Look up camera detect_mode from in-memory cache (refreshes every 8 s).
+				detectMode := getCachedDetectMode(cameraID)
 
 				// Acknowledge Redis Stream message before dispatch so the
 				// read loop is never blocked by a slow or overloaded worker.

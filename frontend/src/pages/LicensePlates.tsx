@@ -19,6 +19,7 @@ export default function LicensePlates({ events = [] }: LicensePlatesProps) {
   const [dateTo, setDateTo] = useState('');
   const [lastEventTime, setLastEventTime] = useState('');
   const [selected, setSelected] = useState<PlateDetection | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const LIMIT = 24;
 
@@ -80,6 +81,22 @@ export default function LicensePlates({ events = [] }: LicensePlatesProps) {
     setPage(1);
   }
 
+  async function handleClearAll() {
+    if (!window.confirm(`ลบรายการทั้งหมด ${total.toLocaleString()} รายการ และรูปภาพทั้งหมด?\n\nการดำเนินการนี้ไม่สามารถย้อนกลับได้`)) return;
+    setClearing(true);
+    try {
+      await api.clearPlateDetections();
+      setPlates([]);
+      setTotal(0);
+      setPage(1);
+    } catch (err) {
+      console.error('Failed to clear plate detections', err);
+      alert('เกิดข้อผิดพลาด ไม่สามารถลบข้อมูลได้');
+    } finally {
+      setClearing(false);
+    }
+  }
+
   const totalPages = Math.ceil(total / LIMIT);
   const hasFilters = cameraFilter || dateFrom || dateTo;
 
@@ -90,6 +107,16 @@ export default function LicensePlates({ events = [] }: LicensePlatesProps) {
           <h1 className="page-title">ทะเบียนรถ</h1>
           <p className="page-subtitle">{total.toLocaleString()} รายการทั้งหมด</p>
         </div>
+        {total > 0 && (
+          <button
+            className="btn btn-danger"
+            onClick={handleClearAll}
+            disabled={clearing}
+            style={{ marginLeft: 'auto' }}
+          >
+            {clearing ? 'กำลังลบ...' : 'ล้างทั้งหมด'}
+          </button>
+        )}
       </div>
 
       {/* Filters */}
