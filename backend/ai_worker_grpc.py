@@ -206,7 +206,8 @@ COOLDOWN_DURATION = 30.0  # seconds
 # and accumulate >= MIN_PLATE_HITS before timing out.
 PLATE_TRACK_TIMEOUT = float(os.getenv("PLATE_TRACK_TIMEOUT", "6.0"))      # seconds of inactivity before flushing
 PLATE_TRACK_MAX_DURATION = float(os.getenv("PLATE_TRACK_MAX_DURATION", "12.0"))
-PLATE_COOLDOWN_DURATION = 10.0 # don't re-report same plate for 10 s
+PLATE_COOLDOWN_DURATION = 10.0  # don't re-report same plate for 10 s
+MIN_PLATE_FLUSH_CONF   = float(os.getenv("MIN_PLATE_FLUSH_CONF", "0.25"))  # discard very noisy invalids
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
 
@@ -245,16 +246,25 @@ def clean_plate_cooldowns():
             del plate_cooldowns[k]
 
 
-def is_plate_on_cooldown(plate_number: str) -> bool:
+def is_plate_on_cooldown(plate_key: str) -> bool:
     now = time.time()
     with plate_cooldowns_lock:
-        exp = plate_cooldowns.get(plate_number)
+        exp = plate_cooldowns.get(plate_key)
         return exp is not None and exp > now
 
 
 def add_plate_cooldown(plate_number: str):
     with plate_cooldowns_lock:
-        plate_cooldowns[plate_number] = time.time() + PLATE_COOLDOWN_DURATION
+        plate_cooldowns[_plate_cooldown_key(plate_number)] = time.time() + PLATE_COOLDOWN_DURATION
+
+
+def _plate_cooldown_key(plate_number: str) -> str:
+    """Normalize plate number for cooldown lookup so minor OCR variations don't bypass it.
+
+    Strips hyphens and spaces so "7-ขว-1344" and "7ขว1344" share the same key.
+    """
+    import re as _re
+    return _re.sub(r'[\s\-–—]', '', plate_number)
 
 
 def flush_plate_track(track: PlateTrack, send_queue):
@@ -268,7 +278,16 @@ def flush_plate_track(track: PlateTrack, send_queue):
     pr = track.best
     label = pr.plate_number or pr.raw_text or "?"
 
-    if pr.plate_number and is_plate_on_cooldown(pr.plate_number):
+    # Gate: discard very noisy results that the engine couldn't parse into a valid plate.
+    if pr.plate_number is None and pr.confidence < MIN_PLATE_FLUSH_CONF:
+        logger.info(
+            f"Discarding plate track for camera {track.camera_id} "
+            f"(confidence={pr.confidence:.2f} < {MIN_PLATE_FLUSH_CONF}, no valid plate number) "
+            f"raw='{pr.raw_text}'"
+        )
+        return
+
+    if pr.plate_number and is_plate_on_cooldown(_plate_cooldown_key(pr.plate_number)):
         logger.info(f"Plate {pr.plate_number} on cooldown — skipping flush")
         return
 

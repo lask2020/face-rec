@@ -26,6 +26,43 @@ type AIWorkerSession struct {
 	avgProcessMs float64
 	isPaused     bool
 	mu           sync.Mutex
+	sendCh       chan *facerec.FrameTask
+	closeOnce    sync.Once
+}
+
+// senderLoop drains sendCh and writes to the gRPC stream sequentially.
+// gRPC stream.Send is not thread-safe, so all sends must go through here.
+func (w *AIWorkerSession) senderLoop() {
+	for task := range w.sendCh {
+		if err := w.stream.Send(task); err != nil {
+			log.Printf("[Worker %s] stream send error: %v — draining queue", w.id, err)
+			// drain remaining so dispatcher goroutines don't block on a dead channel
+			for range w.sendCh {
+			}
+			return
+		}
+	}
+}
+
+// closeSendCh signals senderLoop to exit. Safe to call multiple times.
+func (w *AIWorkerSession) closeSendCh() {
+	w.closeOnce.Do(func() { close(w.sendCh) })
+}
+
+// trySend enqueues a task for the worker without blocking the caller.
+// Returns false if the worker is overloaded (channel full) or disconnected.
+func (w *AIWorkerSession) trySend(task *facerec.FrameTask) (sent bool) {
+	defer func() {
+		if recover() != nil {
+			sent = false // send on closed channel
+		}
+	}()
+	select {
+	case w.sendCh <- task:
+		return true
+	default:
+		return false // worker queue full
+	}
 }
 
 type PendingTask struct {
@@ -94,10 +131,15 @@ func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_
 		stream:      stream,
 		id:          uuid.New().String(),
 		connectedAt: time.Now(),
+		sendCh:      make(chan *facerec.FrameTask, 64),
 	}
 
+	go session.senderLoop()
 	registerWorker(session)
-	defer deregisterWorker(session)
+	defer func() {
+		deregisterWorker(session)
+		session.closeSendCh()
+	}()
 
 	log.Printf("[gRPC] New AI worker connected: %s", session.id)
 
@@ -703,24 +745,25 @@ func StartFrameDispatcher(ctx context.Context) {
 					detectMode = camForMode.DetectMode
 				}
 
-				// Send task over stream
-				err = worker.stream.Send(&facerec.FrameTask{
+				// Acknowledge Redis Stream message before dispatch so the
+				// read loop is never blocked by a slow or overloaded worker.
+				RDB.XAck(ctx, streamName, groupName, msg.ID)
+				RDB.XDel(ctx, streamName, msg.ID)
+
+				// Enqueue frame to the worker's send channel (non-blocking).
+				// senderLoop owns the stream.Send call, so this is thread-safe.
+				sent := worker.trySend(&facerec.FrameTask{
 					TaskId:         taskID,
 					ImageData:      data,
 					IsRegistration: false,
 					DetectMode:     detectMode,
 				})
-
-				if err != nil {
-					log.Printf("[Dispatcher] Failed to send frame to worker %s: %v", worker.id, err)
+				if !sent {
+					log.Printf("[Dispatcher] Worker %s overloaded or disconnected — dropping frame for camera %d", worker.id, cameraID)
 					pendingTasksMu.Lock()
 					delete(pendingTasks, taskID)
 					pendingTasksMu.Unlock()
 				}
-
-				// Acknowledge Redis Stream message
-				RDB.XAck(ctx, streamName, groupName, msg.ID)
-				RDB.XDel(ctx, streamName, msg.ID)
 			}
 		}
 	}

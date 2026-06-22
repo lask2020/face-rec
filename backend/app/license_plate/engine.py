@@ -113,6 +113,27 @@ def _pad_square(image: np.ndarray) -> tuple[np.ndarray, int, int]:
     return canvas, xp, yp
 
 
+def _enhance_plate_crop(crop: np.ndarray) -> np.ndarray:
+    import cv2
+    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+    l_ch, a_ch, b_ch = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+    enhanced_lab = cv2.merge([clahe.apply(l_ch), a_ch, b_ch])
+    enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    return cv2.filter2D(enhanced, -1, kernel)
+
+
+def _binarize_plate(crop: np.ndarray) -> np.ndarray:
+    import cv2
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if np.sum(binary == 255) / binary.size < 0.5:
+        binary = cv2.bitwise_not(binary)
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+
 def _resolve_models_dir() -> str:
     """
     Resolve the model directory using the same strategy as face_engine:
@@ -309,13 +330,21 @@ class LicensePlateEngine:
                     deskewed = cv2.resize(deskewed, None, fx=scale, fy=scale,
                                           interpolation=cv2.INTER_CUBIC)
 
-                # Stage 3 — char detection (BW first, fallback raw)
+                # Stage 3 — char detection: BW → enhanced → binarized
                 gray = cv2.cvtColor(deskewed, cv2.COLOR_BGR2GRAY)
                 clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
                 bw = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
 
                 pad_bw, cxp, cyp = _pad_square(bw)
                 char_dets = self._char_model.detect(pad_bw, conf_thresh=0.20)
+                if not char_dets:
+                    enhanced = _enhance_plate_crop(deskewed)
+                    pad_enh, cxp, cyp = _pad_square(enhanced)
+                    char_dets = self._char_model.detect(pad_enh, conf_thresh=0.15)
+                if not char_dets:
+                    binarized = _binarize_plate(deskewed)
+                    pad_bin, cxp, cyp = _pad_square(binarized)
+                    char_dets = self._char_model.detect(pad_bin, conf_thresh=0.15)
                 if not char_dets:
                     pad_raw, cxp, cyp = _pad_square(deskewed)
                     char_dets = self._char_model.detect(pad_raw, conf_thresh=0.15)
@@ -370,6 +399,14 @@ class LicensePlateEngine:
                 pad_bw, cxp, cyp = _pad_square(bw)
                 char_out = self._char_model(pad_bw, imgsz=640, conf=0.20, verbose=False)
                 if not char_out or len(char_out[0].boxes) == 0:
+                    enhanced = _enhance_plate_crop(deskewed)
+                    pad_enh, cxp, cyp = _pad_square(enhanced)
+                    char_out = self._char_model(pad_enh, imgsz=640, conf=0.15, verbose=False)
+                if not char_out or len(char_out[0].boxes) == 0:
+                    binarized = _binarize_plate(deskewed)
+                    pad_bin, cxp, cyp = _pad_square(binarized)
+                    char_out = self._char_model(pad_bin, imgsz=640, conf=0.15, verbose=False)
+                if not char_out or len(char_out[0].boxes) == 0:
                     pad_raw, cxp, cyp = _pad_square(deskewed)
                     char_out = self._char_model(pad_raw, imgsz=640, conf=0.15, verbose=False)
                 if not char_out or len(char_out[0].boxes) == 0:
@@ -422,13 +459,16 @@ class LicensePlateEngine:
         sorted_chars = sorted(chars_with_pos, key=lambda c: c[0])
         rows: list[list] = []
         for ch in sorted_chars:
-            placed = False
+            best_row = None
+            best_y_diff = float('inf')
             for row in rows:
-                if abs(ch[1] - row[-1][1]) < avg_h * 0.75:
-                    row.append(ch)
-                    placed = True
-                    break
-            if not placed:
+                y_diff = abs(ch[1] - row[-1][1])
+                if y_diff < avg_h * 0.75 and y_diff < best_y_diff:
+                    best_row = row
+                    best_y_diff = y_diff
+            if best_row is not None:
+                best_row.append(ch)
+            else:
                 rows.append([ch])
         rows.sort(key=lambda r: float(np.mean([c[1] for c in r])))
         plate_chars = [c for row in rows for c in row]
@@ -437,6 +477,11 @@ class LicensePlateEngine:
         avg_conf = float(np.mean([c[3] for c in plate_chars]))
         min_conf = float(np.min([c[3] for c in plate_chars]))
 
+        # Discard single-character fragments — no valid Thai plate is shorter than 3 chars.
+        if len(raw_text) < 3:
+            logger.debug("Discarding fragment '%s' (len=%d)", raw_text, len(raw_text))
+            return []
+
         is_valid, normalized, _ = validator.validate(raw_text)
         if not is_valid:
             corrected = validator.correct_common_errors(raw_text)
@@ -444,6 +489,12 @@ class LicensePlateEngine:
                 is_valid, normalized, _ = validator.validate(corrected)
 
         plate_number = normalized if is_valid else None
+
+        # Drop low-confidence invalid results early — they add noise without value.
+        if plate_number is None and avg_conf < 0.30:
+            logger.debug("Discarding low-conf invalid plate '%s' (avg_conf=%.2f)", raw_text, avg_conf)
+            return []
+
         return [PlateResult(
             plate_number=plate_number,
             confidence=min_conf if plate_number else avg_conf * 0.5,
