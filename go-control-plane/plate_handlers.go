@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"time"
 
@@ -130,6 +131,23 @@ func getPlateDetectionStats(c *fiber.Ctx) error {
 
 // ── gRPC result handler ───────────────────────────────────────────────────────
 
+// Snapshot crop padding (multiples of the detected plate's own width/height).
+// Larger values capture more of the vehicle around the plate.
+var (
+	plateSnapshotPadX      = envFloat("PLATE_SNAPSHOT_PAD_X", 4.0)
+	plateSnapshotPadTop    = envFloat("PLATE_SNAPSHOT_PAD_TOP", 5.0)
+	plateSnapshotPadBottom = envFloat("PLATE_SNAPSHOT_PAD_BOTTOM", 3.0)
+)
+
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
 func handlePlateDetections(ctx context.Context, result *facerec.InferenceResult, task PendingTask) {
 	var cam Camera
 	DB.First(&cam, task.CameraID)
@@ -150,23 +168,29 @@ func handlePlateDetections(ctx context.Context, result *facerec.InferenceResult,
 			filename := fmt.Sprintf("plate_cam_%d_%d_%d.jpg", task.CameraID, task.Timestamp, idx)
 
 			var imgBytes []byte
-			if len(pd.SnapshotJpeg) > 0 {
-				// Use the deskewed plate crop from the best-confidence frame (sent by Python).
-				imgBytes = pd.SnapshotJpeg
-			} else if len(pd.Bbox) == 4 && len(task.ImageBytes) > 0 {
-				// Fallback: crop from full frame with modest padding (1.5× each side).
+			if len(pd.Bbox) == 4 && len(task.ImageBytes) > 0 {
+				// Preferred: crop a wide region around the plate from the full frame so
+				// the vehicle is visible (not just the tight deskewed plate crop).
+				// Padding is expressed as a multiple of the plate's own width/height and
+				// is tunable via env vars. CropJPEG clamps to the image bounds.
 				x1 := int(pd.Bbox[0])
 				y1 := int(pd.Bbox[1])
 				x2 := int(pd.Bbox[2])
 				y2 := int(pd.Bbox[3])
-				pw := int(float64(x2-x1) * 1.5)
-				ph := int(float64(y2-y1) * 1.5)
-				cropped, err := CropJPEG(task.ImageBytes, x1-pw, y1-ph, x2+pw, y2+ph, 88)
+				pw := int(float64(x2-x1) * plateSnapshotPadX)
+				phTop := int(float64(y2-y1) * plateSnapshotPadTop)
+				phBot := int(float64(y2-y1) * plateSnapshotPadBottom)
+				cropped, err := CropJPEG(task.ImageBytes, x1-pw, y1-phTop, x2+pw, y2+phBot, 88)
 				if err == nil {
 					imgBytes = cropped
+				} else if len(pd.SnapshotJpeg) > 0 {
+					imgBytes = pd.SnapshotJpeg
 				} else {
 					imgBytes = task.ImageBytes
 				}
+			} else if len(pd.SnapshotJpeg) > 0 {
+				// Fallback when the full frame / bbox is unavailable: deskewed plate crop.
+				imgBytes = pd.SnapshotJpeg
 			}
 
 			if len(imgBytes) > 0 {
