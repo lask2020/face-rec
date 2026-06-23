@@ -141,7 +141,7 @@ func saveTrainingFrames(ctx context.Context, frames []*facerec.PlateTrainingFram
 			CharLabels: frame.CharLabelsJson,
 			RawText:    frame.RawText,
 			Confidence: float64(frame.Confidence),
-			Status:     "approved", // high-confidence captures are auto-approved
+			Status:     "pending",
 			DetectedAt: time.UnixMilli(task.Timestamp),
 		}
 
