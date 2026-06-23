@@ -214,9 +214,10 @@ PLATE_COOLDOWN_DURATION = 10.0  # don't re-report same plate for 10 s
 MIN_PLATE_FLUSH_CONF   = float(os.getenv("MIN_PLATE_FLUSH_CONF", "0.25"))  # discard very noisy invalids
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
-# Frames with confidence below this threshold are saved as training candidates
-TRAINING_CAPTURE_CONF_MAX = float(os.getenv("TRAINING_CAPTURE_CONF_MAX", "0.65"))
-# Max frames per track to send as training candidates (pick lowest-confidence ones)
+# Frames with confidence AT OR ABOVE this threshold are captured as training data.
+# High-confidence detections make reliable auto-labeled ground truth.
+TRAINING_CAPTURE_CONF_MIN = float(os.getenv("TRAINING_CAPTURE_CONF_MIN", "0.80"))
+# Max frames per track to send as training data (pick highest-confidence ones)
 TRAINING_MAX_FRAMES_PER_TRACK = int(os.getenv("TRAINING_MAX_FRAMES_PER_TRACK", "3"))
 
 
@@ -391,6 +392,7 @@ def _assemble_multi_frame(frame_results: list) -> PlateResult:
         province=province,
         raw_text=raw_text,
         chars=[],
+        crop_bytes=best_frame.crop_bytes,  # deskewed crop from best-confidence frame
     )
 
 
@@ -434,12 +436,12 @@ def flush_plate_track(track: PlateTrack, send_queue):
             for c in chars
         ], ensure_ascii=False)
 
-    # Collect low-confidence frames as training candidates (cap at N lowest-conf)
+    # Collect high-confidence frames as auto-labeled training data (cap at N highest-conf)
     candidates = [
         fr for fr in track.frame_results
-        if fr.confidence < TRAINING_CAPTURE_CONF_MAX and fr.chars and fr.crop_bytes
+        if fr.confidence >= TRAINING_CAPTURE_CONF_MIN and fr.chars and fr.crop_bytes
     ]
-    candidates.sort(key=lambda fr: fr.confidence)
+    candidates.sort(key=lambda fr: fr.confidence, reverse=True)
     training_frames = [
         facerec_pb2.PlateTrainingFrame(
             crop_jpeg=fr.crop_bytes,
@@ -462,6 +464,7 @@ def flush_plate_track(track: PlateTrack, send_queue):
             province=pr.province or "",
             raw_text=pr.raw_text,
             char_labels_json=_char_labels_json(pr.chars) if pr.chars else "",
+            snapshot_jpeg=pr.crop_bytes or b"",
         )],
         plate_training_frames=training_frames,
     ))

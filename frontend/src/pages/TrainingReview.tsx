@@ -389,6 +389,8 @@ export default function TrainingReview() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [exportCount, setExportCount] = useState<number | null>(null);
   const [showStats, setShowStats] = useState(false);
+  const [clearModal, setClearModal] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
@@ -438,6 +440,18 @@ export default function TrainingReview() {
     load(); loadStats();
   };
 
+  const handleClear = async (status?: string) => {
+    setClearing(true);
+    try {
+      await trainingApi.clear(status);
+      setClearModal(false);
+      load();
+      loadStats();
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const handleSaveLabels = async (id: number, charLabels: CharLabel[]) => {
     await trainingApi.update(id, { char_labels: JSON.stringify(charLabels) });
     // no full reload needed — just update local state
@@ -482,11 +496,69 @@ export default function TrainingReview() {
 
   return (
     <div style={{ padding: '16px 20px' }}>
+      {/* Clear confirmation modal */}
+      {clearModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 10, padding: 24, width: 340, boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16 }}>ล้างข้อมูล Training</h3>
+            <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--text-secondary)' }}>
+              เลือกข้อมูลที่ต้องการลบ รวมถึงไฟล์รูปใน S3 ด้วย
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button
+                disabled={clearing}
+                onClick={() => handleClear('rejected')}
+                style={{ padding: '9px 0', borderRadius: 6, border: 'none', cursor: 'pointer', background: '#7c3aed', color: '#fff', fontSize: 13, fontWeight: 600 }}
+              >
+                ลบเฉพาะ Rejected ({rejectedCount} รายการ)
+              </button>
+              <button
+                disabled={clearing}
+                onClick={() => handleClear('pending')}
+                style={{ padding: '9px 0', borderRadius: 6, border: 'none', cursor: 'pointer', background: '#b45309', color: '#fff', fontSize: 13, fontWeight: 600 }}
+              >
+                ลบเฉพาะ Pending ({pendingCount} รายการ)
+              </button>
+              <button
+                disabled={clearing}
+                onClick={() => handleClear()}
+                style={{ padding: '9px 0', borderRadius: 6, border: 'none', cursor: 'pointer', background: '#dc2626', color: '#fff', fontSize: 13, fontWeight: 600 }}
+              >
+                ลบทั้งหมด ({(pendingCount + approvedCount + rejectedCount)} รายการ)
+              </button>
+              <button
+                disabled={clearing}
+                onClick={() => setClearModal(false)}
+                style={{ padding: '9px 0', borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', background: 'transparent', color: 'var(--text)', fontSize: 13 }}
+              >
+                ยกเลิก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
         <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Training Review</h1>
         <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-          Low-confidence plate crops for OCR retraining
+          High-confidence auto-labeled plate crops for OCR retraining
         </span>
+        <button
+          onClick={() => setClearModal(true)}
+          style={{
+            marginLeft: 'auto', padding: '6px 14px', fontSize: 12, borderRadius: 6,
+            border: '1px solid #dc2626', color: '#dc2626', background: 'transparent',
+            cursor: 'pointer', fontWeight: 600,
+          }}
+        >
+          ล้างข้อมูล
+        </button>
       </div>
 
       {/* Stats summary */}

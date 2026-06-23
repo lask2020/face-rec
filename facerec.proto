@@ -38,6 +38,7 @@ message PlateDetection {
   string province = 5;                 // Thai province name if detected
   string raw_text = 6;                 // raw OCR text before validation
   string char_labels_json = 7;         // JSON: [{class_name,cx,cy,bw,bh,confidence}]
+  bytes snapshot_jpeg = 8;             // deskewed plate crop from best-confidence frame
 }
 
 // A single plate crop frame captured for training / active-learning review.

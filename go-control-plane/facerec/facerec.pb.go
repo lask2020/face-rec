@@ -242,6 +242,7 @@ type PlateDetection struct {
 	Province       string                 `protobuf:"bytes,5,opt,name=province,proto3" json:"province,omitempty"`                                     // Thai province name if detected
 	RawText        string                 `protobuf:"bytes,6,opt,name=raw_text,json=rawText,proto3" json:"raw_text,omitempty"`                        // raw OCR text before validation
 	CharLabelsJson string                 `protobuf:"bytes,7,opt,name=char_labels_json,json=charLabelsJson,proto3" json:"char_labels_json,omitempty"` // JSON: [{class_name,cx,cy,bw,bh,confidence}]
+	SnapshotJpeg   []byte                 `protobuf:"bytes,8,opt,name=snapshot_jpeg,json=snapshotJpeg,proto3" json:"snapshot_jpeg,omitempty"`         // deskewed plate crop from best-confidence frame
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -323,6 +324,13 @@ func (x *PlateDetection) GetCharLabelsJson() string {
 		return x.CharLabelsJson
 	}
 	return ""
+}
+
+func (x *PlateDetection) GetSnapshotJpeg() []byte {
+	if x != nil {
+		return x.SnapshotJpeg
+	}
+	return nil
 }
 
 // A single plate crop frame captured for training / active-learning review.
@@ -426,7 +434,7 @@ const file_facerec_proto_rawDesc = "" +
 	"\tDetection\x12\x12\n" +
 	"\x04bbox\x18\x01 \x03(\x02R\x04bbox\x12\x1c\n" +
 	"\tembedding\x18\x02 \x03(\x02R\tembedding\x12,\n" +
-	"\x12restored_face_jpeg\x18\x03 \x01(\fR\x10restoredFaceJpeg\"\xe7\x01\n" +
+	"\x12restored_face_jpeg\x18\x03 \x01(\fR\x10restoredFaceJpeg\"\x8c\x02\n" +
 	"\x0ePlateDetection\x12\x12\n" +
 	"\x04bbox\x18\x01 \x03(\x02R\x04bbox\x12!\n" +
 	"\fplate_number\x18\x02 \x01(\tR\vplateNumber\x12\x1e\n" +
@@ -437,7 +445,8 @@ const file_facerec_proto_rawDesc = "" +
 	"plate_type\x18\x04 \x01(\tR\tplateType\x12\x1a\n" +
 	"\bprovince\x18\x05 \x01(\tR\bprovince\x12\x19\n" +
 	"\braw_text\x18\x06 \x01(\tR\arawText\x12(\n" +
-	"\x10char_labels_json\x18\a \x01(\tR\x0echarLabelsJson\"\xb1\x01\n" +
+	"\x10char_labels_json\x18\a \x01(\tR\x0echarLabelsJson\x12#\n" +
+	"\rsnapshot_jpeg\x18\b \x01(\fR\fsnapshotJpeg\"\xb1\x01\n" +
 	"\x12PlateTrainingFrame\x12\x1b\n" +
 	"\tcrop_jpeg\x18\x01 \x01(\fR\bcropJpeg\x12(\n" +
 	"\x10char_labels_json\x18\x02 \x01(\tR\x0echarLabelsJson\x12\x1e\n" +

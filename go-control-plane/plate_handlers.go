@@ -149,31 +149,37 @@ func handlePlateDetections(ctx context.Context, result *facerec.InferenceResult,
 		if S3Client != nil {
 			filename := fmt.Sprintf("plate_cam_%d_%d_%d.jpg", task.CameraID, task.Timestamp, idx)
 
-			// Crop around the plate bbox with generous padding so the car is visible.
-			// Padding: 3× the plate height vertically, 1.5× the plate width horizontally.
-			imgBytes := task.ImageBytes
-			if len(pd.Bbox) == 4 {
+			var imgBytes []byte
+			if len(pd.SnapshotJpeg) > 0 {
+				// Use the deskewed plate crop from the best-confidence frame (sent by Python).
+				imgBytes = pd.SnapshotJpeg
+			} else if len(pd.Bbox) == 4 && len(task.ImageBytes) > 0 {
+				// Fallback: crop from full frame with modest padding (1.5× each side).
 				x1 := int(pd.Bbox[0])
 				y1 := int(pd.Bbox[1])
 				x2 := int(pd.Bbox[2])
 				y2 := int(pd.Bbox[3])
 				pw := int(float64(x2-x1) * 1.5)
-				ph := int(float64(y2-y1) * 3.0)
+				ph := int(float64(y2-y1) * 1.5)
 				cropped, err := CropJPEG(task.ImageBytes, x1-pw, y1-ph, x2+pw, y2+ph, 88)
 				if err == nil {
 					imgBytes = cropped
+				} else {
+					imgBytes = task.ImageBytes
 				}
 			}
 
-			_, err := S3Client.PutObject(
-				ctx, SnapshotsBucket, filename,
-				bytes.NewReader(imgBytes), int64(len(imgBytes)),
-				minio.PutObjectOptions{ContentType: "image/jpeg"},
-			)
-			if err == nil {
-				logEntry.SnapshotPath = "/api/static/snapshots/" + filename
-			} else {
-				log.Printf("[Plate] Failed to upload snapshot to S3: %v", err)
+			if len(imgBytes) > 0 {
+				_, err := S3Client.PutObject(
+					ctx, SnapshotsBucket, filename,
+					bytes.NewReader(imgBytes), int64(len(imgBytes)),
+					minio.PutObjectOptions{ContentType: "image/jpeg"},
+				)
+				if err == nil {
+					logEntry.SnapshotPath = "/api/static/snapshots/" + filename
+				} else {
+					log.Printf("[Plate] Failed to upload snapshot to S3: %v", err)
+				}
 			}
 		}
 

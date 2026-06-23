@@ -141,7 +141,7 @@ func saveTrainingFrames(ctx context.Context, frames []*facerec.PlateTrainingFram
 			CharLabels: frame.CharLabelsJson,
 			RawText:    frame.RawText,
 			Confidence: float64(frame.Confidence),
-			Status:     "pending",
+			Status:     "approved", // high-confidence captures are auto-approved
 			DetectedAt: time.UnixMilli(task.Timestamp),
 		}
 
@@ -278,6 +278,41 @@ func bulkUpdateTrainingSamples(c *fiber.Ctx) error {
 	}
 	result := DB.Model(&PlateTrainingSample{}).Where("id IN ?", body.IDs).Updates(updates)
 	return c.JSON(fiber.Map{"updated": result.RowsAffected})
+}
+
+func clearTrainingSamples(c *fiber.Ctx) error {
+	status := c.Query("status", "") // empty = all statuses
+
+	query := DB.Model(&PlateTrainingSample{})
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+
+	// Collect S3 keys before deleting rows
+	var samples []PlateTrainingSample
+	query.Find(&samples)
+
+	if S3Client != nil {
+		for _, s := range samples {
+			if s.ImagePath != "" {
+				if err := S3Client.RemoveObject(c.Context(), SnapshotsBucket, s.ImagePath, minio.RemoveObjectOptions{}); err != nil {
+					log.Printf("[Training] S3 delete failed for %s: %v", s.ImagePath, err)
+				}
+			}
+		}
+	}
+
+	del := DB.Where("1 = 1")
+	if status != "" {
+		del = DB.Where("status = ?", status)
+	}
+	result := del.Delete(&PlateTrainingSample{})
+	if result.Error != nil {
+		return c.Status(500).JSON(fiber.Map{"error": result.Error.Error()})
+	}
+
+	log.Printf("[Training] Cleared %d samples (status=%q)", result.RowsAffected, status)
+	return c.JSON(fiber.Map{"deleted": result.RowsAffected})
 }
 
 func updateTrainingTrack(c *fiber.Ctx) error {

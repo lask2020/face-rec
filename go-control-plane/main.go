@@ -63,6 +63,7 @@ func main() {
 
 	// Training Review
 	api.Get("/training/plates", listTrainingSamples)
+	api.Delete("/training/plates", clearTrainingSamples)
 	api.Get("/training/plates/stats", getTrainingStats)
 	api.Get("/training/plates/export", exportTrainingZip)
 	api.Get("/training/plates/export/preview", getExportPreview)

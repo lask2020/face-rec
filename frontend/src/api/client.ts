@@ -449,6 +449,12 @@ export const trainingApi = {
       params: { status, conf_max: conf_max ?? null },
     }),
 
+  clear: (status?: string): Promise<{ deleted: number }> =>
+    request('/training/plates', {
+      method: 'DELETE',
+      params: status ? { status } : {},
+    }),
+
   exportUrl: (status = 'approved', conf_max?: number): string => {
     const p = new URLSearchParams({ status });
     if (conf_max != null) p.set('conf_max', String(conf_max));
