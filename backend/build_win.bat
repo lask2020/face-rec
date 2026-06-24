@@ -116,12 +116,19 @@ echo Compiling protobuf...
 python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. facerec.proto
 
 echo [4/4] Compiling with PyInstaller...
+
+SET DIRECTML_ARGS=
+IF "%TARGET%"=="directml" (
+    SET DIRECTML_ARGS=--collect-binaries torch_directml
+)
+
 pyinstaller --noconfirm --noconsole --onefile ^
     --name="FaceRec_AI_Worker_Windows_%SUFFIX%" ^
     --add-data "app;app" ^
     --add-data "facerec.proto;." ^
     --hidden-import finetune_char_model ^
     --collect-binaries onnxruntime ^
+    %DIRECTML_ARGS% ^
     ai_worker_gui.py
 
 if %errorlevel% neq 0 (

@@ -935,23 +935,21 @@ func listModelVersions(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"versions": versions, "active": activeVersion})
 }
 
-func deployModelVersion(c *fiber.Ctx) error {
-	version := c.Params("version")
-	if version == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "version required"})
-	}
-
+// activateVersion copies a stored version's model files into the active model
+// dir, marks it active, then asynchronously pushes to S3 and reloads workers.
+// Shared by the deploy endpoint and the gRPC finetune "done" handler.
+func activateVersion(version string) error {
 	modelsDir := resolveModelsDir()
 	versionDir := filepath.Join(modelsDir, "versions", version)
 	if !fileExists(versionDir) {
-		return c.Status(404).JSON(fiber.Map{"error": "version not found"})
+		return fmt.Errorf("version not found: %s", version)
 	}
 
 	ptSrc := filepath.Join(versionDir, "thai_char_yolo26s.pt")
 	ptDst := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
 	if fileExists(ptSrc) {
 		if err := copyFile(ptSrc, ptDst); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "copy .pt failed: " + err.Error()})
+			return fmt.Errorf("copy .pt failed: %w", err)
 		}
 	}
 
@@ -959,7 +957,7 @@ func deployModelVersion(c *fiber.Ctx) error {
 	onnxDst := filepath.Join(modelsDir, "thai_char_yolo26s.onnx")
 	if fileExists(onnxSrc) {
 		if err := copyFile(onnxSrc, onnxDst); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "copy .onnx failed: " + err.Error()})
+			return fmt.Errorf("copy .onnx failed: %w", err)
 		}
 	}
 
@@ -967,12 +965,45 @@ func deployModelVersion(c *fiber.Ctx) error {
 
 	// Push to S3 first, THEN broadcast reload — otherwise workers would pull the
 	// stale/partial model from S3 before the upload finishes. Run async so the
-	// HTTP response returns immediately; the actual reload happens in background.
+	// caller returns immediately; the actual reload happens in background.
 	go func() {
 		pushModelsToS3(version)
 		n := BroadcastReloadModels()
-		log.Printf("[ModelDeploy] version %s pushed to S3, reload delivered to %d worker(s)", version, n)
+		log.Printf("[ModelActivate] version %s pushed to S3, reload delivered to %d worker(s)", version, n)
 	}()
+
+	return nil
+}
+
+// writeVersionMeta writes meta.json for a version dir (control-plane authoritative).
+func writeVersionMeta(version string, epochs int) {
+	var samples int64
+	DB.Model(&PlateTrainingSample{}).Where("status = 'approved'").Count(&samples)
+	meta := ModelVersionMeta{
+		Version:   version,
+		TrainedAt: time.Now().UTC().Format(time.RFC3339),
+		Samples:   int(samples),
+		Epochs:    epochs,
+		BaseModel: "thai_char_yolo26s.pt",
+	}
+	dir := filepath.Join(resolveModelsDir(), "versions", version)
+	os.MkdirAll(dir, 0o755) //nolint:errcheck
+	b, _ := json.Marshal(meta)
+	os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644) //nolint:errcheck
+}
+
+func deployModelVersion(c *fiber.Ctx) error {
+	version := c.Params("version")
+	if version == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "version required"})
+	}
+
+	if err := activateVersion(version); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	log.Printf("[ModelDeploy] Deploying version %s — pushing to S3 then reloading workers", version)
 	return c.JSON(fiber.Map{"deployed": version, "status": "deploying"})

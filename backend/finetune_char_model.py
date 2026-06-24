@@ -399,6 +399,10 @@ def _run(args, tmp_root, YOLO, torch):
                     pass
         emit({"type": "epoch", "epoch": trainer.epoch + 1, "epochs": total_epochs, **loss_dict})
 
+    # In a PyInstaller frozen build, dataloader subprocesses re-launch the exe,
+    # which is unsafe. Load data in the main process (workers=0) when frozen.
+    train_workers = 0 if getattr(sys, "frozen", False) else 2
+
     try:
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
@@ -414,7 +418,7 @@ def _run(args, tmp_root, YOLO, torch):
             patience=10,
             save=True,
             verbose=False,
-            workers=2,
+            workers=train_workers,
             cache=False,
             plots=False,
         )

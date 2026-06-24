@@ -401,6 +401,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Required for PyInstaller frozen builds: ultralytics dataloader uses
+    # multiprocessing, which re-executes the exe for each worker process.
+    # Without this guard the children re-run main() and spawn extra GUIs.
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     if len(sys.argv) > 1 and sys.argv[1] == "--run-worker":
         import ai_worker_grpc
         ai_worker_grpc.run_grpc_client()

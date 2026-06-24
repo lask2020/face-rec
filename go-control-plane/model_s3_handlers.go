@@ -149,6 +149,60 @@ func downloadModelFile(c *fiber.Ctx) error {
 	return err
 }
 
+// validVersionName guards against path traversal in the version path segment.
+func validVersionName(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// PUT /api/models/upload/:version/:filename — AI worker uploads a freshly
+// trained model file. Body is the raw file bytes. Saved to
+// data/models/versions/{version}/{filename}. The worker calls this for each
+// model file after training, before signalling "done" over gRPC.
+func uploadModelFile(c *fiber.Ctx) error {
+	version := c.Params("version")
+	name := c.Params("filename")
+
+	if !validVersionName(version) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid version"})
+	}
+
+	allowed := false
+	for _, n := range modelFileNames {
+		if n == name {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return c.Status(403).JSON(fiber.Map{"error": "file not allowed"})
+	}
+
+	body := c.Body()
+	if len(body) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "empty body"})
+	}
+
+	destDir := filepath.Join(resolveModelsDir(), "versions", version)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	dest := filepath.Join(destDir, name)
+	if err := os.WriteFile(dest, body, 0o644); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	log.Printf("[ModelUpload] saved %s for version %s (%d bytes)", name, version, len(body))
+	return c.JSON(fiber.Map{"saved": name, "version": version, "bytes": len(body)})
+}
+
 // POST /api/models/push — manually push current local active models to S3.
 // Useful for bootstrapping: run once after placing initial models on disk.
 func pushModelsHandler(c *fiber.Ctx) error {

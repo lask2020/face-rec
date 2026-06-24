@@ -15,8 +15,9 @@ import (
 func main() {
 	app := fiber.New(fiber.Config{
 		AppName: "Face Recognition Control Plane",
-		// Increase body limit for face image uploads
-		BodyLimit: 10 * 1024 * 1024,
+		// Large limit to accommodate AI worker uploading trained model files
+		// (.pt + .onnx can be tens of MB) alongside face image uploads.
+		BodyLimit: 256 * 1024 * 1024,
 	})
 
 	app.Use(logger.New())
@@ -77,6 +78,7 @@ func main() {
 	api.Post("/training/models/versions/:version/deploy", deployModelVersion)
 	api.Get("/models/manifest", getModelsManifest)
 	api.Get("/models/download/:filename", downloadModelFile)
+	api.Put("/models/upload/:version/:filename", uploadModelFile)
 	api.Post("/models/push", pushModelsHandler)
 
 	// Workers

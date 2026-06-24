@@ -533,17 +533,21 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 		case "info":
 			finetuneJob.appendLog(fp.Message)
 		case "done":
-			finetuneJob.appendLog("Training done. Pushing model to S3...")
+			finetuneJob.appendLog("Training done — activating new model version")
 			finetuneJob.mu.Lock()
 			finetuneJob.Status = "done"
+			epochs := finetuneJob.Epochs
 			finetuneJob.mu.Unlock()
 			if fp.Version != "" {
-				writeActiveVersion(fp.Version)
-				go func() {
-					pushModelsToS3(fp.Version)
-					n := BroadcastReloadModels()
-					log.Printf("[Finetune] version %s pushed to S3, reload sent to %d worker(s)", fp.Version, n)
-				}()
+				// Worker has already uploaded the trained model files to
+				// versions/{version}/ via HTTP. Write metadata, then activate.
+				writeVersionMeta(fp.Version, epochs)
+				if err := activateVersion(fp.Version); err != nil {
+					finetuneJob.setError("activate failed: " + err.Error())
+					log.Printf("[Finetune] activate version %s failed: %v", fp.Version, err)
+				} else {
+					log.Printf("[Finetune] version %s activated — pushing to S3 + reloading workers", fp.Version)
+				}
 			}
 		case "error":
 			finetuneJob.setError(fp.Message)

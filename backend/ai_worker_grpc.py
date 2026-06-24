@@ -684,6 +684,30 @@ def track_flusher(send_queue, stop_event=None):
                 logger.error(f"Error in track_flusher: {e}")
 
 
+def _upload_model_file(http_url: str, version: str, file_path: str, send_queue) -> bool:
+    """Upload a trained model file to the control plane via raw PUT body. Returns True on success."""
+    import urllib.request
+
+    filename = os.path.basename(file_path)
+    url = f"{http_url}/api/models/upload/{version}/{filename}"
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
+        req = urllib.request.Request(
+            url, data=data, method="PUT",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            resp.read()
+        _send_finetune_progress(send_queue, type="info",
+                                message=f"Uploaded {filename} ({len(data)} bytes) to control plane")
+        return True
+    except Exception as e:
+        _send_finetune_progress(send_queue, type="info",
+                                message=f"Upload {filename} failed: {e}")
+        return False
+
+
 def _send_finetune_progress(send_queue, **kwargs):
     """Helper to send FinetuneProgress back to the control plane via gRPC."""
     fp = facerec_pb2.FinetuneProgress(**kwargs)
@@ -762,8 +786,26 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
                 box_loss=float(msg.get("box_loss", 0)),
                 cls_loss=float(msg.get("cls_loss", 0)))
         elif msg_type == "done":
+            version = msg.get("version", "")
+            # Trained model lives on THIS worker's disk. Upload it back to the
+            # control plane before signalling "done" so the control plane can
+            # version, push to S3, and reload all workers.
+            if version and http_url:
+                ok = True
+                for fpath in (msg.get("model", ""), msg.get("onnx", "")):
+                    if fpath and os.path.exists(fpath):
+                        if not _upload_model_file(http_url, version, fpath, send_queue):
+                            ok = False
+                if not ok:
+                    _send_finetune_progress(send_queue, type="error",
+                                            message="Model upload to control plane failed — not activating")
+                    return
+            elif version and not http_url:
+                _send_finetune_progress(send_queue, type="error",
+                                        message="No control plane HTTP URL — cannot upload trained model")
+                return
             _send_finetune_progress(send_queue, type="done",
-                                    version=msg.get("version", ""),
+                                    version=version,
                                     message="Training complete")
         elif msg_type == "error":
             _send_finetune_progress(send_queue, type="error",
