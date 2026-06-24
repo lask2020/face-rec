@@ -92,6 +92,27 @@ class YoloOnnxSession:
         self.inp_name  = self.session.get_inputs()[0].name
         self.names     = names or {}
 
+        # Class names embedded in the model always match its output indices.
+        # Prefer them over an external names.json, which can drift out of sync
+        # after a fine-tune deploy (model gains/loses classes but the json is
+        # not regenerated → every char mislabeled → plates fail validation).
+        try:
+            import ast
+            embedded = self.session.get_modelmeta().custom_metadata_map.get("names")
+            if embedded:
+                parsed = ast.literal_eval(embedded)
+                resolved = {int(k): v for k, v in parsed.items()}
+                if resolved:
+                    if self.names and len(self.names) != len(resolved):
+                        logger.warning(
+                            "names.json has %d classes but model embeds %d — using model's embedded names",
+                            len(self.names), len(resolved),
+                        )
+                    self.names = resolved
+        except Exception as e:
+            logger.warning("Could not read embedded class names from %s (%s) — using names.json",
+                           os.path.basename(onnx_path), e)
+
         inp   = self.session.get_inputs()[0]
         # inp.shape may be [1, 3, H, W] or [batch, 3, H, W]
         self.imgsz = int(inp.shape[2]) if inp.shape[2] else 640
