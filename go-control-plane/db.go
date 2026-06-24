@@ -118,6 +118,12 @@ func (pts *PlateTrainingSample) AfterFind(tx *gorm.DB) (err error) {
 	return nil
 }
 
+type AppSetting struct {
+	Key       string    `gorm:"primaryKey" json:"key"`
+	Value     string    `gorm:"type:text" json:"value"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 func InitDatabase() {
 	user := os.Getenv("POSTGRES_USER")
 	pass := os.Getenv("POSTGRES_PASSWORD")
@@ -150,7 +156,7 @@ func InitDatabase() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	err = DB.AutoMigrate(&Person{}, &PersonFace{}, &Camera{}, &DetectionLog{}, &PlateDetectionLog{}, &PlateTrainingSample{})
+	err = DB.AutoMigrate(&Person{}, &PersonFace{}, &Camera{}, &DetectionLog{}, &PlateDetectionLog{}, &PlateTrainingSample{}, &AppSetting{})
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}

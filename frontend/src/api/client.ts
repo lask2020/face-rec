@@ -506,3 +506,14 @@ export interface FinetuneStatus {
   log: string[];
   error: string;
 }
+
+export const settingsApi = {
+  get: (key: string): Promise<{ key: string; value: string }> =>
+    request(`/settings/${key}`),
+  set: (key: string, value: string): Promise<{ key: string; value: string }> =>
+    request(`/settings/${key}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    }),
+};

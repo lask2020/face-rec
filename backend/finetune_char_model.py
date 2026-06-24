@@ -146,6 +146,40 @@ FIXED_DATASETS = [
     "license-plate-charecter-5",
 ]
 
+ROBOFLOW_SOURCES = [
+    {"folder": "Thai-License-Plate-Character-Recognition-10", "workspace": "meenyossakorn",          "project": "thai-license-plate-character-recognition", "version": 10},
+    {"folder": "license-plate-charecter-5",                   "workspace": "mydataset-zrfok",        "project": "license-plate-charecter",                  "version": 5},
+    {"folder": "LRU-License-Plate-1",                         "workspace": "lru",                    "project": "lru-license-plate",                        "version": 1},
+    {"folder": "Thai-LNPR-3",                                 "workspace": "thai-car-detection-mboy6","project": "thai-lnpr-c6prf",                          "version": 3},
+]
+
+
+def download_roboflow_datasets(base_dir: str, api_key: str) -> None:
+    """Download any missing Roboflow datasets into base_dir. Skips already-downloaded ones."""
+    if not api_key:
+        return
+    try:
+        from roboflow import Roboflow
+    except ImportError:
+        emit({"type": "info", "message": "roboflow package not installed — skipping auto-download (pip install roboflow)"})
+        return
+
+    rf = Roboflow(api_key=api_key)
+    for ds in ROBOFLOW_SOURCES:
+        dest = os.path.join(base_dir, ds["folder"])
+        # Consider already downloaded if the train/images subfolder exists and has files
+        img_dir = os.path.join(dest, "train", "images")
+        if os.path.isdir(img_dir) and any(True for _ in os.scandir(img_dir)):
+            emit({"type": "info", "message": f"[roboflow] {ds['folder']} already exists — skipping"})
+            continue
+        emit({"type": "info", "message": f"[roboflow] Downloading {ds['folder']} ..."})
+        try:
+            project = rf.workspace(ds["workspace"]).project(ds["project"])
+            project.version(ds["version"]).download("yolov8", location=dest)
+            emit({"type": "info", "message": f"[roboflow] {ds['folder']} downloaded"})
+        except Exception as e:
+            emit({"type": "info", "message": f"[roboflow] {ds['folder']} download failed: {e}"})
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -518,6 +552,7 @@ def run_finetune_inline(
     roboflow_base: str | None = None,
     progress_cb=None,
     stop_event=None,
+    roboflow_api_key: str = "",
 ):
     """
     Call fine-tuning directly in-process (no subprocess).
@@ -558,6 +593,10 @@ def run_finetune_inline(
 
     global _stop_event
     _stop_event = stop_event
+
+    if roboflow_api_key and roboflow_base:
+        os.makedirs(roboflow_base, exist_ok=True)
+        download_roboflow_datasets(roboflow_base, roboflow_api_key)
 
     tmp_root = tempfile.mkdtemp(prefix="finetune_")
     try:

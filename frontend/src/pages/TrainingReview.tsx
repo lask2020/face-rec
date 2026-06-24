@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { trainingApi, modelApi } from '../api/client';
+import { trainingApi, modelApi, settingsApi } from '../api/client';
 import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion } from '../api/client';
 
 const LIMIT = 20;
@@ -395,6 +395,9 @@ export default function TrainingReview() {
   const [finetuning, setFinetuning] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [epochs, setEpochs] = useState(30);
+  const [roboflowKey, setRoboflowKey] = useState('');
+  const [roboflowKeySaved, setRoboflowKeySaved] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
   const logBoxRef = useRef<HTMLDivElement>(null);
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
@@ -434,6 +437,12 @@ export default function TrainingReview() {
   }, []);
 
   useEffect(() => { loadVersions(); }, [loadVersions]);
+
+  useEffect(() => {
+    settingsApi.get('roboflow_api_key').then((s) => {
+      if (s.value) setRoboflowKey(s.value);
+    }).catch(() => {});
+  }, []);
 
   // Poll finetune status on load, and every 2s while running
   useEffect(() => {
@@ -544,6 +553,17 @@ export default function TrainingReview() {
       alert('Deploy failed: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setDeployingVersion(null);
+    }
+  };
+
+  const handleSaveRoboflowKey = async () => {
+    setSavingKey(true);
+    try {
+      await settingsApi.set('roboflow_api_key', roboflowKey);
+      setRoboflowKeySaved(true);
+      setTimeout(() => setRoboflowKeySaved(false), 2000);
+    } catch { /* ignore */ } finally {
+      setSavingKey(false);
     }
   };
 
@@ -687,6 +707,32 @@ export default function TrainingReview() {
           >
             Export ZIP
           </a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="password"
+              value={roboflowKey}
+              onChange={(e) => setRoboflowKey(e.target.value)}
+              placeholder="Roboflow API key"
+              style={{
+                width: 160, padding: '5px 8px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-input)',
+                color: 'var(--text)', fontSize: 12,
+              }}
+            />
+            <button
+              onClick={handleSaveRoboflowKey}
+              disabled={savingKey}
+              style={{
+                padding: '5px 10px', fontSize: 12, borderRadius: 6,
+                border: '1px solid var(--border)',
+                cursor: savingKey ? 'not-allowed' : 'pointer',
+                background: roboflowKeySaved ? '#16a34a' : 'var(--bg-card)',
+                color: roboflowKeySaved ? '#fff' : 'var(--text)',
+              }}
+            >
+              {roboflowKeySaved ? 'Saved' : 'Save'}
+            </button>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <label style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Epochs</label>
             <input

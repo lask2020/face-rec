@@ -837,6 +837,7 @@ func startFinetune(c *fiber.Ctx) error {
 			StartFinetune:        true,
 			FinetuneDatasetS3Key: s3Key,
 			FinetuneEpochs:       epochs,
+			RoboflowApiKey:       getSettingValue("roboflow_api_key"),
 		}
 		delivered := BroadcastFinetuneTask(task)
 		if delivered == 0 {

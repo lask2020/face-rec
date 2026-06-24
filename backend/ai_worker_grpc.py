@@ -768,7 +768,7 @@ def _send_finetune_progress(send_queue, **kwargs):
         pass
 
 
-def _run_finetune(s3_key: str, epochs: int, send_queue):
+def _run_finetune(s3_key: str, epochs: int, send_queue, roboflow_api_key: str = ""):
     """Download the CCTV dataset zip from S3, merge with Roboflow datasets, run fine-tuning."""
     import zipfile
     import tempfile
@@ -880,6 +880,7 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
             roboflow_base=roboflow_base,
             progress_cb=_on_progress,
             stop_event=_finetune_stop_event,
+            roboflow_api_key=roboflow_api_key,
         )
     except Exception as e:
         _send_finetune_progress(send_queue, type="error", message=f"Training failed: {e}")
@@ -1151,8 +1152,9 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                         if getattr(task, 'start_finetune', False):
                             s3_key = getattr(task, 'finetune_dataset_s3_key', '')
                             epochs = getattr(task, 'finetune_epochs', 30) or 30
+                            roboflow_api_key = getattr(task, 'roboflow_api_key', '') or ''
                             logger.info(f"Received start_finetune signal — dataset_s3_key={s3_key} epochs={epochs}")
-                            executor.submit(_run_finetune, s3_key, epochs, send_queue)
+                            executor.submit(_run_finetune, s3_key, epochs, send_queue, roboflow_api_key)
                             continue
 
                         task_id = task.task_id

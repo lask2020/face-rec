@@ -75,6 +75,9 @@ func main() {
 	api.Post("/training/plates/finetune", startFinetune)
 	api.Post("/training/plates/finetune/stop", stopFinetune)
 	api.Get("/training/plates/finetune/status", getFinetuneStatus)
+
+	api.Get("/settings/:key", getSetting)
+	api.Put("/settings/:key", putSetting)
 	api.Get("/training/models/versions", listModelVersions)
 	api.Post("/training/models/versions/:version/deploy", deployModelVersion)
 	api.Get("/models/manifest", getModelsManifest)

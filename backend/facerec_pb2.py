@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rfacerec.proto\x12\x07\x66\x61\x63\x65rec\"\xde\x01\n\tFrameTask\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x12\n\nimage_data\x18\x02 \x01(\x0c\x12\x17\n\x0fis_registration\x18\x03 \x01(\x08\x12\x13\n\x0b\x64\x65tect_mode\x18\x04 \x01(\t\x12\x15\n\rreload_models\x18\x05 \x01(\x08\x12\x16\n\x0estart_finetune\x18\x06 \x01(\x08\x12\x1f\n\x17\x66inetune_dataset_s3_key\x18\x07 \x01(\t\x12\x17\n\x0f\x66inetune_epochs\x18\x08 \x01(\x05\x12\x15\n\rstop_finetune\x18\t \x01(\x08\"\x9f\x02\n\x0fInferenceResult\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12&\n\ndetections\x18\x02 \x03(\x0b\x32\x12.facerec.Detection\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x17\n\x0fprocess_time_ms\x18\x04 \x01(\x02\x12\x31\n\x10plate_detections\x18\x05 \x03(\x0b\x32\x17.facerec.PlateDetection\x12:\n\x15plate_training_frames\x18\x06 \x03(\x0b\x32\x1b.facerec.PlateTrainingFrame\x12\x34\n\x11\x66inetune_progress\x18\x07 \x01(\x0b\x32\x19.facerec.FinetuneProgress\"\x85\x01\n\x10\x46inetuneProgress\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x65poch\x18\x02 \x01(\x05\x12\x0e\n\x06\x65pochs\x18\x03 \x01(\x05\x12\x10\n\x08\x62ox_loss\x18\x04 \x01(\x02\x12\x10\n\x08\x63ls_loss\x18\x05 \x01(\x02\x12\x0f\n\x07message\x18\x06 \x01(\t\x12\x0f\n\x07version\x18\x07 \x01(\t\"H\n\tDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x11\n\tembedding\x18\x02 \x03(\x02\x12\x1a\n\x12restored_face_jpeg\x18\x03 \x01(\x0c\"\xb1\x01\n\x0ePlateDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x14\n\x0cplate_number\x18\x02 \x01(\t\x12\x12\n\nconfidence\x18\x03 \x01(\x02\x12\x12\n\nplate_type\x18\x04 \x01(\t\x12\x10\n\x08province\x18\x05 \x01(\t\x12\x10\n\x08raw_text\x18\x06 \x01(\t\x12\x18\n\x10\x63har_labels_json\x18\x07 \x01(\t\x12\x15\n\rsnapshot_jpeg\x18\x08 \x01(\x0c\"y\n\x12PlateTrainingFrame\x12\x11\n\tcrop_jpeg\x18\x01 \x01(\x0c\x12\x18\n\x10\x63har_labels_json\x18\x02 \x01(\t\x12\x12\n\nconfidence\x18\x03 \x01(\x02\x12\x10\n\x08raw_text\x18\x04 \x01(\t\x12\x10\n\x08track_id\x18\x05 \x01(\t2Y\n\x14\x46\x61\x63\x65InferenceService\x12\x41\n\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x01\x30\x01\x42\x0bZ\t./facerecb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rfacerec.proto\x12\x07\x66\x61\x63\x65rec\"\xf8\x01\n\tFrameTask\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12\x12\n\nimage_data\x18\x02 \x01(\x0c\x12\x17\n\x0fis_registration\x18\x03 \x01(\x08\x12\x13\n\x0b\x64\x65tect_mode\x18\x04 \x01(\t\x12\x15\n\rreload_models\x18\x05 \x01(\x08\x12\x16\n\x0estart_finetune\x18\x06 \x01(\x08\x12\x1f\n\x17\x66inetune_dataset_s3_key\x18\x07 \x01(\t\x12\x17\n\x0f\x66inetune_epochs\x18\x08 \x01(\x05\x12\x15\n\rstop_finetune\x18\t \x01(\x08\x12\x18\n\x10roboflow_api_key\x18\n \x01(\t\"\x9f\x02\n\x0fInferenceResult\x12\x0f\n\x07task_id\x18\x01 \x01(\t\x12&\n\ndetections\x18\x02 \x03(\x0b\x32\x12.facerec.Detection\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x17\n\x0fprocess_time_ms\x18\x04 \x01(\x02\x12\x31\n\x10plate_detections\x18\x05 \x03(\x0b\x32\x17.facerec.PlateDetection\x12:\n\x15plate_training_frames\x18\x06 \x03(\x0b\x32\x1b.facerec.PlateTrainingFrame\x12\x34\n\x11\x66inetune_progress\x18\x07 \x01(\x0b\x32\x19.facerec.FinetuneProgress\"\x85\x01\n\x10\x46inetuneProgress\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x65poch\x18\x02 \x01(\x05\x12\x0e\n\x06\x65pochs\x18\x03 \x01(\x05\x12\x10\n\x08\x62ox_loss\x18\x04 \x01(\x02\x12\x10\n\x08\x63ls_loss\x18\x05 \x01(\x02\x12\x0f\n\x07message\x18\x06 \x01(\t\x12\x0f\n\x07version\x18\x07 \x01(\t\"H\n\tDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x11\n\tembedding\x18\x02 \x03(\x02\x12\x1a\n\x12restored_face_jpeg\x18\x03 \x01(\x0c\"\xb1\x01\n\x0ePlateDetection\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\x14\n\x0cplate_number\x18\x02 \x01(\t\x12\x12\n\nconfidence\x18\x03 \x01(\x02\x12\x12\n\nplate_type\x18\x04 \x01(\t\x12\x10\n\x08province\x18\x05 \x01(\t\x12\x10\n\x08raw_text\x18\x06 \x01(\t\x12\x18\n\x10\x63har_labels_json\x18\x07 \x01(\t\x12\x15\n\rsnapshot_jpeg\x18\x08 \x01(\x0c\"y\n\x12PlateTrainingFrame\x12\x11\n\tcrop_jpeg\x18\x01 \x01(\x0c\x12\x18\n\x10\x63har_labels_json\x18\x02 \x01(\t\x12\x12\n\nconfidence\x18\x03 \x01(\x02\x12\x10\n\x08raw_text\x18\x04 \x01(\t\x12\x10\n\x08track_id\x18\x05 \x01(\t2Y\n\x14\x46\x61\x63\x65InferenceService\x12\x41\n\rProcessStream\x12\x18.facerec.InferenceResult\x1a\x12.facerec.FrameTask(\x01\x30\x01\x42\x0bZ\t./facerecb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,17 +33,17 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z\t./facerec'
   _globals['_FRAMETASK']._serialized_start=27
-  _globals['_FRAMETASK']._serialized_end=249
-  _globals['_INFERENCERESULT']._serialized_start=252
-  _globals['_INFERENCERESULT']._serialized_end=539
-  _globals['_FINETUNEPROGRESS']._serialized_start=542
-  _globals['_FINETUNEPROGRESS']._serialized_end=675
-  _globals['_DETECTION']._serialized_start=677
-  _globals['_DETECTION']._serialized_end=749
-  _globals['_PLATEDETECTION']._serialized_start=752
-  _globals['_PLATEDETECTION']._serialized_end=929
-  _globals['_PLATETRAININGFRAME']._serialized_start=931
-  _globals['_PLATETRAININGFRAME']._serialized_end=1052
-  _globals['_FACEINFERENCESERVICE']._serialized_start=1054
-  _globals['_FACEINFERENCESERVICE']._serialized_end=1143
+  _globals['_FRAMETASK']._serialized_end=275
+  _globals['_INFERENCERESULT']._serialized_start=278
+  _globals['_INFERENCERESULT']._serialized_end=565
+  _globals['_FINETUNEPROGRESS']._serialized_start=568
+  _globals['_FINETUNEPROGRESS']._serialized_end=701
+  _globals['_DETECTION']._serialized_start=703
+  _globals['_DETECTION']._serialized_end=775
+  _globals['_PLATEDETECTION']._serialized_start=778
+  _globals['_PLATEDETECTION']._serialized_end=955
+  _globals['_PLATETRAININGFRAME']._serialized_start=957
+  _globals['_PLATETRAININGFRAME']._serialized_end=1078
+  _globals['_FACEINFERENCESERVICE']._serialized_start=1080
+  _globals['_FACEINFERENCESERVICE']._serialized_end=1169
 # @@protoc_insertion_point(module_scope)
