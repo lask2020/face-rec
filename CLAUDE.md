@@ -89,7 +89,64 @@ GET    /api/training/plates/export/preview  count without downloading
 GET    /api/training/plates/:id
 PUT    /api/training/plates/:id           update status / corrected_text / char_labels
 POST   /api/training/plates/bulk          bulk status update
+POST   /api/training/plates/finetune        start fine-tune job (dispatches to AI worker)
+GET    /api/training/plates/finetune/status finetune job status + log
+GET    /api/training/models/versions         list trained versions (+ active)
+POST   /api/training/models/versions/:v/deploy  activate a version
+GET    /api/models/manifest                 S3 model files (worker reads on startup)
+GET    /api/models/download/:filename       stream model file from S3
+PUT    /api/models/upload/:version/:filename worker uploads trained model back
+POST   /api/models/push                     manually push local models → S3
 ```
+
+---
+
+## Fine-tuning Flow (training runs ON the AI worker — it has the GPU)
+
+**Key principle:** the Go control plane does NOT run Python/training. It exports
+data and dispatches; the **AI worker** trains in-process and uploads the result back.
+
+```
+Frontend → POST /api/training/plates/finetune
+  Go (startFinetune, training_handlers.go):
+    1. exportDatasetToDir()  — approved samples → YOLO dirs (train/valid) + data.yaml
+    2. zipDirectory()        — zip the export
+    3. S3 PutObject          — upload finetune_dataset_<ts>.zip to SnapshotsBucket
+    4. BroadcastFinetuneTask — gRPC FrameTask{start_finetune, dataset_s3_key, epochs}
+       (sendBlocking, 10s; aborts + deletes S3 zip if no worker connected)
+
+  AI worker (_run_finetune, ai_worker_grpc.py) — runs in ThreadPoolExecutor:
+    1. download zip via http://<cp>:8000/api/static/snapshots/<key>
+    2. _rewrite_dataset_yaml() — rewrite data.yaml paths to THIS machine's extract dir
+       (control plane's absolute paths are invalid on the worker)
+    3. finetune_char_model.run_finetune_inline() — IN-PROCESS (no subprocess; works
+       in PyInstaller frozen exe). Merges Roboflow datasets from ROBOFLOW_DATASET_BASE
+       (data/datasets/, sibling of data/models/) if present, else CCTV-only.
+    4. on "done": _upload_model_file() PUTs best .pt/.onnx → /api/models/upload/<ver>/...
+    5. streams FinetuneProgress back via gRPC InferenceResult.finetune_progress
+
+  Go (handleInferenceResult → FinetuneProgress, grpc_server.go):
+    - epoch/info → update finetuneJob state + log
+    - done → writeVersionMeta() + activateVersion()
+             (copy versions/<ver>/* → active model dir, push S3, BroadcastReloadModels)
+    - error → finetuneJob.setError()
+```
+
+### Critical invariants
+- **Trained model lives on the worker** — it MUST upload back to the control plane
+  (`PUT /api/models/upload`); `pushModelsToS3` reads the control plane's local disk.
+- **Paths are absolute** — `_resolve_models_dir()` returns `os.path.abspath(...)`
+  because ultralytics changes CWD during training (relative paths break post-train).
+- **PyInstaller frozen exe**: `ai_worker_gui.py` calls `multiprocessing.freeze_support()`;
+  training uses `workers=0` when `sys.frozen` (dataloader subprocs would relaunch the exe).
+  `finetune_char_model` is bundled via `--hidden-import` (no `__file__`/subprocess).
+- **DirectML build**: `build_win.bat directml` adds `--collect-binaries torch_directml`.
+
+### Roboflow datasets (optional, accuracy boost)
+Place on the **worker** at `data/datasets/` (sibling of `data/models/`):
+`Thai-License-Plate-Character-Recognition-10`, `Thai-LNPR-3`, `LRU-License-Plate-1`,
+`license-plate-charecter-5`. All remapped to MASTER_CLASSES before merge.
+Missing dirs are skipped → CCTV-only training.
 
 ### char_labels JSON format
 ```json
@@ -140,7 +197,11 @@ cd frontend && npx tsc --noEmit
 
 # Python syntax check
 python3 -c "import ast; ast.parse(open('backend/ai_worker_grpc.py').read())"
+python3 -c "import ast; ast.parse(open('backend/finetune_char_model.py').read())"
 
 # Run Python worker
 cd backend && python3 ai_worker_grpc.py
+
+# Build Windows worker exe (cpu | gpu | directml | openvino)
+cd backend && build_win.bat directml --clean
 ```
