@@ -40,11 +40,15 @@ interface PlateCanvasProps {
   labels: CharLabel[];
   selectedIdx: number | null;
   onCharClick: (idx: number) => void;
+  drawMode: boolean;
+  onAddBox: (box: { cx: number; cy: number; bw: number; bh: number }) => void;
 }
 
-function PlateCanvas({ imageUrl, labels, selectedIdx, onCharClick }: PlateCanvasProps) {
+function PlateCanvas({ imageUrl, labels, selectedIdx, onCharClick, drawMode, onAddBox }: PlateCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [displaySize, setDisplaySize] = useState<[number, number]>([280, 80]);
+  // Normalized drag rect while drawing a new box (null when not dragging).
+  const [drag, setDrag] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
 
   useEffect(() => {
     const img = new Image();
@@ -85,19 +89,58 @@ function PlateCanvas({ imageUrl, labels, selectedIdx, onCharClick }: PlateCanvas
         ctx.font = 'bold 9px sans-serif';
         ctx.fillText(lbl.class_name, x + 1, y > 10 ? y - 2 : y + bh + 9);
       });
+      // In-progress drag rectangle
+      if (drag) {
+        const x = Math.min(drag.x1, drag.x2) * w;
+        const y = Math.min(drag.y1, drag.y2) * h;
+        const bw = Math.abs(drag.x2 - drag.x1) * w;
+        const bh = Math.abs(drag.y2 - drag.y1) * h;
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 2]);
+        ctx.strokeRect(x, y, bw, bh);
+        ctx.setLineDash([]);
+      }
     };
     img.src = imageUrl;
-  }, [imageUrl, labels, displaySize, selectedIdx]);
+  }, [imageUrl, labels, displaySize, selectedIdx, drag]);
+
+  const normPos = (e: React.MouseEvent) => {
+    const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / displaySize[0],
+      y: (e.clientY - rect.top) / displaySize[1],
+    };
+  };
 
   return (
     <canvas
       ref={canvasRef}
-      style={{ display: 'block', cursor: 'pointer' }}
+      style={{ display: 'block', cursor: drawMode ? 'crosshair' : 'pointer' }}
+      onMouseDown={(e) => {
+        if (!drawMode) return;
+        const { x, y } = normPos(e);
+        setDrag({ x1: x, y1: y, x2: x, y2: y });
+      }}
+      onMouseMove={(e) => {
+        if (!drawMode || !drag) return;
+        const { x, y } = normPos(e);
+        setDrag((d) => (d ? { ...d, x2: x, y2: y } : d));
+      }}
+      onMouseUp={(e) => {
+        if (!drawMode || !drag) return;
+        const { x, y } = normPos(e);
+        const x1 = Math.min(drag.x1, x), y1 = Math.min(drag.y1, y);
+        const x2 = Math.max(drag.x1, x), y2 = Math.max(drag.y1, y);
+        setDrag(null);
+        const bw = x2 - x1, bh = y2 - y1;
+        // Ignore accidental tiny drags
+        if (bw < 0.02 || bh < 0.05) return;
+        onAddBox({ cx: x1 + bw / 2, cy: y1 + bh / 2, bw, bh });
+      }}
       onClick={(e) => {
-        if (!labels.length) return;
-        const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-        const mx = (e.clientX - rect.left) / displaySize[0];
-        const my = (e.clientY - rect.top) / displaySize[1];
+        if (drawMode || !labels.length) return;
+        const { x: mx, y: my } = normPos(e);
         let closest = 0;
         let minDist = Infinity;
         labels.forEach((lbl, i) => {
@@ -117,9 +160,10 @@ interface CharLabelEditorProps {
   selectedIdx: number | null;
   onSelect: (idx: number) => void;
   onChange: (idx: number, newClass: string) => void;
+  onDelete: (idx: number) => void;
 }
 
-function CharLabelEditor({ labels, selectedIdx, onSelect, onChange }: CharLabelEditorProps) {
+function CharLabelEditor({ labels, selectedIdx, onSelect, onChange, onDelete }: CharLabelEditorProps) {
   if (!labels.length) return null;
   const selected = selectedIdx !== null ? labels[selectedIdx] : null;
 
@@ -162,9 +206,19 @@ function CharLabelEditor({ labels, selectedIdx, onSelect, onChange }: CharLabelE
             padding: '6px 8px',
           }}
         >
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4 }}>
-            แก้ตัวที่ {selectedIdx + 1}: <strong style={{ color: 'var(--text)' }}>{selected.class_name}</strong>
-            &nbsp;(conf {(selected.confidence * 100).toFixed(0)}%)
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 4, display: 'flex', alignItems: 'center' }}>
+            <span>
+              แก้ตัวที่ {selectedIdx + 1}: <strong style={{ color: 'var(--text)' }}>{selected.class_name}</strong>
+              &nbsp;(conf {(selected.confidence * 100).toFixed(0)}%)
+            </span>
+            <button
+              onClick={() => onDelete(selectedIdx)}
+              title="ลบกล่องนี้"
+              style={{
+                marginLeft: 'auto', fontSize: 11, padding: '1px 6px', borderRadius: 4,
+                border: '1px solid #dc2626', background: 'transparent', color: '#ef4444', cursor: 'pointer',
+              }}
+            >🗑 ลบ</button>
           </div>
           {/* Digit row */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 4 }}>
@@ -255,12 +309,14 @@ function SampleCard({
   const [labels, setLabels] = useState<CharLabel[]>(() => parsedLabels(sample.char_labels));
   const [selectedCharIdx, setSelectedCharIdx] = useState<number | null>(null);
   const [labelsDirty, setLabelsDirty] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
 
   // Sync if parent updates sample
   useEffect(() => {
     setLabels(parsedLabels(sample.char_labels));
     setLabelsDirty(false);
     setSelectedCharIdx(null);
+    setDrawMode(false);
   }, [sample.char_labels]);
 
   const handleCharChange = (idx: number, newClass: string) => {
@@ -275,6 +331,26 @@ function SampleCard({
 
   const handleSelectChar = (idx: number) => {
     setSelectedCharIdx(idx < 0 ? null : idx);
+  };
+
+  const handleAddBox = (box: { cx: number; cy: number; bw: number; bh: number }) => {
+    // New manually-drawn box: confidence 1.0 (human-labeled). Default class '0' —
+    // the editor opens so the user immediately picks the correct class.
+    setLabels((prev) => {
+      const next = [...prev, { class_name: '0', confidence: 1.0, ...box }];
+      // Keep left-to-right order so the assembled text reads correctly.
+      next.sort((a, b) => a.cx - b.cx);
+      setSelectedCharIdx(next.findIndex((l) => l.cx === box.cx && l.cy === box.cy));
+      return next;
+    });
+    setLabelsDirty(true);
+    setDrawMode(false);
+  };
+
+  const handleDeleteChar = (idx: number) => {
+    setLabels((prev) => prev.filter((_, i) => i !== idx));
+    setLabelsDirty(true);
+    setSelectedCharIdx(null);
   };
 
   const confColor = sample.confidence > 0.7 ? '#22c55e' : sample.confidence > 0.4 ? '#f59e0b' : '#ef4444';
@@ -316,6 +392,8 @@ function SampleCard({
             labels={labels}
             selectedIdx={selectedCharIdx}
             onCharClick={handleSelectChar}
+            drawMode={drawMode}
+            onAddBox={handleAddBox}
           />
         ) : (
           <div style={{ width: 280, height: 80, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 11 }}>
@@ -324,12 +402,30 @@ function SampleCard({
         )}
       </div>
 
+      {/* Draw-box toggle */}
+      {sample.image_url && (
+        <div style={{ padding: '4px 6px 0' }}>
+          <button
+            onClick={() => { setDrawMode((d) => !d); setSelectedCharIdx(null); }}
+            style={{
+              width: '100%', padding: '4px', fontSize: 12, cursor: 'pointer', borderRadius: 4, fontWeight: 600,
+              border: `1px solid ${drawMode ? '#3b82f6' : 'var(--border)'}`,
+              background: drawMode ? 'rgba(59,130,246,0.18)' : 'transparent',
+              color: drawMode ? '#3b82f6' : 'var(--text)',
+            }}
+          >
+            {drawMode ? '✏️ กำลังวาด — ลากครอบตัวอักษรที่ขาด (คลิกเพื่อยกเลิก)' : '➕ เพิ่มกล่องตัวอักษร'}
+          </button>
+        </div>
+      )}
+
       {/* Per-char editor */}
       <CharLabelEditor
         labels={labels}
         selectedIdx={selectedCharIdx}
         onSelect={handleSelectChar}
         onChange={handleCharChange}
+        onDelete={handleDeleteChar}
       />
 
       {/* Save labels button — only when dirty */}
@@ -564,6 +660,42 @@ export default function TrainingReview() {
       alert('Deploy failed: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setDeployingVersion(null);
+    }
+  };
+
+  const [snapshotting, setSnapshotting] = useState(false);
+  const handleSnapshot = async () => {
+    const label = prompt('ตั้งชื่อ version นี้ (เช่น baseline-ดี, ก่อนลอง roboflow):', 'baseline');
+    if (label === null) return;
+    setSnapshotting(true);
+    try {
+      await modelApi.snapshot(label);
+      await loadVersions();
+    } catch (e: unknown) {
+      alert('Snapshot failed: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSnapshotting(false);
+    }
+  };
+
+  const handleRenameVersion = async (version: string, current: string) => {
+    const label = prompt('เปลี่ยนชื่อ version:', current);
+    if (label === null) return;
+    try {
+      await modelApi.rename(version, label);
+      await loadVersions();
+    } catch (e: unknown) {
+      alert('Rename failed: ' + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const handleDeleteVersion = async (version: string) => {
+    if (!confirm(`ลบ version ${version}? (ลบไฟล์โมเดลถาวร)`)) return;
+    try {
+      await modelApi.remove(version);
+      await loadVersions();
+    } catch (e: unknown) {
+      alert('Delete failed: ' + (e instanceof Error ? e.message : String(e)));
     }
   };
 
@@ -914,49 +1046,76 @@ export default function TrainingReview() {
       )}
 
       {/* Model versions */}
-      {modelVersions.length > 0 && (
-        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12 }}>
+      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '8px 16px', gap: 8 }}>
           <button
             onClick={() => setShowVersions(v => !v)}
             style={{
-              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 16px', background: 'transparent', border: 'none', cursor: 'pointer',
+              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '2px 0', background: 'transparent', border: 'none', cursor: 'pointer',
               color: 'var(--text)', fontSize: 13, fontWeight: 600,
             }}
           >
             <span>Model Versions ({modelVersions.length})</span>
             <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{showVersions ? '▲' : '▼'}</span>
           </button>
+          <button
+            onClick={handleSnapshot}
+            disabled={snapshotting}
+            title="เซฟโมเดลที่ใช้อยู่ตอนนี้เป็น version ไว้ rollback"
+            style={{
+              padding: '5px 10px', fontSize: 12, fontWeight: 600, borderRadius: 6, whiteSpace: 'nowrap',
+              border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)',
+              cursor: snapshotting ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {snapshotting ? 'Saving…' : '💾 Save current'}
+          </button>
+        </div>
 
-          {showVersions && (
-            <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {modelVersions.map((v) => (
-                <div key={v.version} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
-                  borderRadius: 6, background: v.active ? 'rgba(124,58,237,0.1)' : 'transparent',
-                  border: v.active ? '1px solid #7c3aed' : '1px solid transparent',
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>
-                        {v.version.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6')}
+        {showVersions && (
+          <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {modelVersions.length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '4px 2px' }}>
+                ยังไม่มี version — กด "💾 Save current" เพื่อเซฟโมเดลปัจจุบันเป็นจุด rollback
+              </div>
+            )}
+            {modelVersions.map((v) => (
+              <div key={v.version} style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                borderRadius: 6, background: v.active ? 'rgba(124,58,237,0.1)' : 'transparent',
+                border: v.active ? '1px solid #7c3aed' : '1px solid var(--border)',
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    {v.label && (
+                      <span style={{ fontSize: 12, fontWeight: 700 }}>{v.label}</span>
+                    )}
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+                      {v.version.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6')}
+                    </span>
+                    {v.active && (
+                      <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#7c3aed', color: '#fff', fontWeight: 700 }}>
+                        ACTIVE
                       </span>
-                      {v.active && (
-                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#7c3aed', color: '#fff', fontWeight: 700 }}>
-                          ACTIVE
-                        </span>
-                      )}
-                      {!v.has_onnx && (
-                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#78350f', color: '#fbbf24' }}>
-                          .pt only
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                      {v.samples > 0 ? `${v.samples} samples · ` : ''}{v.epochs} epochs · {v.base_model}
-                    </div>
+                    )}
+                    {!v.has_onnx && (
+                      <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#78350f', color: '#fbbf24' }}>
+                        .pt only
+                      </span>
+                    )}
                   </div>
-                  {!v.active && (
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                    {v.samples > 0 ? `${v.samples} samples · ` : ''}{v.epochs > 0 ? `${v.epochs} epochs · ` : ''}{v.base_model}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleRenameVersion(v.version, v.label)}
+                  title="เปลี่ยนชื่อ"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13, padding: '2px 4px' }}
+                >✏️</button>
+                {!v.active && (
+                  <>
                     <button
                       onClick={() => handleDeploy(v.version)}
                       disabled={!!deployingVersion}
@@ -970,13 +1129,18 @@ export default function TrainingReview() {
                     >
                       {deployingVersion === v.version ? 'Deploying...' : 'Deploy'}
                     </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+                    <button
+                      onClick={() => handleDeleteVersion(v.version)}
+                      title="ลบ version"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 13, padding: '2px 4px' }}
+                    >🗑</button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Filters + bulk */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>

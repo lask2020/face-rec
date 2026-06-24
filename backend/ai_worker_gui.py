@@ -119,6 +119,7 @@ class AIWorkerWindow(QMainWindow):
         self.min_plate_hits_value = 1
         self.plate_track_timeout_value = 6.0
         self.plate_track_max_duration_value = 12.0
+        self.training_capture_conf_min_value = 0.80
         self._load_config()
 
         self.setup_ui()
@@ -134,6 +135,7 @@ class AIWorkerWindow(QMainWindow):
                     self.min_plate_hits_value = config.get("min_plate_hits", self.min_plate_hits_value)
                     self.plate_track_timeout_value = config.get("plate_track_timeout", self.plate_track_timeout_value)
                     self.plate_track_max_duration_value = config.get("plate_track_max_duration", self.plate_track_max_duration_value)
+                    self.training_capture_conf_min_value = config.get("training_capture_conf_min", self.training_capture_conf_min_value)
             except Exception as e:
                 logging.error(f"Failed to load config: {e}")
 
@@ -146,6 +148,7 @@ class AIWorkerWindow(QMainWindow):
                     "min_plate_hits": self.min_plate_hits_spin.value(),
                     "plate_track_timeout": self.plate_track_timeout_spin.value(),
                     "plate_track_max_duration": self.plate_track_max_duration_spin.value(),
+                    "training_capture_conf_min": self.training_capture_conf_min_spin.value(),
                 }, f, indent=4)
         except Exception as e:
             logging.error(f"Failed to save config: {e}")
@@ -269,8 +272,23 @@ class AIWorkerWindow(QMainWindow):
         plate_form.addWidget(self.min_plate_hits_spin, 0, 1)
         plate_form.addWidget(timeout_lbl, 0, 2)
         plate_form.addWidget(self.plate_track_timeout_spin, 0, 3)
+        # Training Capture Conf Min
+        conf_min_lbl = QLabel("Training Conf Min:")
+        conf_min_lbl.setFont(QFont("Helvetica", 13))
+        conf_min_lbl.setToolTip("Frames with confidence >= this value are captured as auto-labeled training data. "
+                                "Higher = fewer but cleaner samples. (TRAINING_CAPTURE_CONF_MIN)")
+        self.training_capture_conf_min_spin = QDoubleSpinBox()
+        self.training_capture_conf_min_spin.setFont(QFont("Helvetica", 13))
+        self.training_capture_conf_min_spin.setRange(0.0, 1.0)
+        self.training_capture_conf_min_spin.setSingleStep(0.05)
+        self.training_capture_conf_min_spin.setDecimals(2)
+        self.training_capture_conf_min_spin.setValue(float(self.training_capture_conf_min_value))
+        self.training_capture_conf_min_spin.valueChanged.connect(self._save_config)
+
         plate_form.addWidget(maxdur_lbl, 1, 0)
         plate_form.addWidget(self.plate_track_max_duration_spin, 1, 1)
+        plate_form.addWidget(conf_min_lbl, 1, 2)
+        plate_form.addWidget(self.training_capture_conf_min_spin, 1, 3)
 
         main_layout.addLayout(plate_form)
 
@@ -335,6 +353,7 @@ class AIWorkerWindow(QMainWindow):
             "MIN_PLATE_HITS": self.min_plate_hits_spin.value(),
             "PLATE_TRACK_TIMEOUT": self.plate_track_timeout_spin.value(),
             "PLATE_TRACK_MAX_DURATION": self.plate_track_max_duration_spin.value(),
+            "TRAINING_CAPTURE_CONF_MIN": self.training_capture_conf_min_spin.value(),
         }
 
         self.url_entry.setEnabled(False)
@@ -342,6 +361,7 @@ class AIWorkerWindow(QMainWindow):
         self.min_plate_hits_spin.setEnabled(False)
         self.plate_track_timeout_spin.setEnabled(False)
         self.plate_track_max_duration_spin.setEnabled(False)
+        self.training_capture_conf_min_spin.setEnabled(False)
         self.start_btn.setText("🛑 Stop Worker")
         self.start_btn.setStyleSheet("""
             QPushButton {
@@ -387,6 +407,7 @@ class AIWorkerWindow(QMainWindow):
         self.min_plate_hits_spin.setEnabled(True)
         self.plate_track_timeout_spin.setEnabled(True)
         self.plate_track_max_duration_spin.setEnabled(True)
+        self.training_capture_conf_min_spin.setEnabled(True)
         logging.info("Worker thread completely stopped.")
 
     def on_worker_error(self, err_msg):

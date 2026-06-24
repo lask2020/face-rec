@@ -477,6 +477,7 @@ export const trainingApi = {
 
 export interface ModelVersion {
   version: string;
+  label: string;
   trained_at: string;
   samples: number;
   epochs: number;
@@ -496,6 +497,23 @@ export const modelApi = {
 
   deploy: (version: string): Promise<{ deployed: string; status: string }> =>
     request(`/training/models/versions/${encodeURIComponent(version)}/deploy`, { method: 'POST' }),
+
+  snapshot: (label: string): Promise<ModelVersion> =>
+    request('/training/models/versions/snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    }),
+
+  rename: (version: string, label: string): Promise<ModelVersion> =>
+    request(`/training/models/versions/${encodeURIComponent(version)}/label`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    }),
+
+  remove: (version: string): Promise<{ deleted: string }> =>
+    request(`/training/models/versions/${encodeURIComponent(version)}`, { method: 'DELETE' }),
 };
 
 export interface FinetuneStatus {

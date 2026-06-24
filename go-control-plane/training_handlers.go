@@ -936,6 +936,7 @@ func buildYoloLabel(s PlateTrainingSample) string {
 
 type ModelVersionMeta struct {
 	Version   string `json:"version"`
+	Label     string `json:"label"`
 	TrainedAt string `json:"trained_at"`
 	Samples   int    `json:"samples"`
 	Epochs    int    `json:"epochs"`
@@ -1059,6 +1060,104 @@ func deployModelVersion(c *fiber.Ctx) error {
 
 	log.Printf("[ModelDeploy] Deploying version %s — pushing to S3 then reloading workers", version)
 	return c.JSON(fiber.Map{"deployed": version, "status": "deploying"})
+}
+
+// snapshotModelVersion copies the CURRENTLY ACTIVE char model into a new version
+// dir so it can always be restored later. Essential as a rollback point before
+// experimenting with new fine-tunes (the hand-trained baseline would otherwise be
+// overwritten with no way back).
+func snapshotModelVersion(c *fiber.Ctx) error {
+	var body struct {
+		Label string `json:"label"`
+	}
+	_ = c.BodyParser(&body)
+
+	modelsDir := resolveModelsDir()
+	ptSrc := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
+	onnxSrc := filepath.Join(modelsDir, "thai_char_yolo26s.onnx")
+	if !fileExists(ptSrc) && !fileExists(onnxSrc) {
+		return c.Status(404).JSON(fiber.Map{"error": "no active char model to snapshot"})
+	}
+
+	version := time.Now().Format("20060102_150405")
+	destDir := filepath.Join(modelsDir, "versions", version)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if fileExists(ptSrc) {
+		if err := copyFile(ptSrc, filepath.Join(destDir, "thai_char_yolo26s.pt")); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "copy .pt failed: " + err.Error()})
+		}
+	}
+	if fileExists(onnxSrc) {
+		if err := copyFile(onnxSrc, filepath.Join(destDir, "thai_char_yolo26s.onnx")); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "copy .onnx failed: " + err.Error()})
+		}
+	}
+
+	label := strings.TrimSpace(body.Label)
+	if label == "" {
+		label = "snapshot"
+	}
+	meta := ModelVersionMeta{
+		Version:   version,
+		Label:     label,
+		TrainedAt: time.Now().UTC().Format(time.RFC3339),
+		BaseModel: "thai_char_yolo26s.pt (snapshot of active)",
+	}
+	b, _ := json.Marshal(meta)
+	os.WriteFile(filepath.Join(destDir, "meta.json"), b, 0o644) //nolint:errcheck
+
+	log.Printf("[ModelSnapshot] Saved active model as version %s (label=%q)", version, label)
+	return c.JSON(meta)
+}
+
+// renameModelVersion updates a version's human-readable label.
+func renameModelVersion(c *fiber.Ctx) error {
+	version := c.Params("version")
+	if !validVersionName(version) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid version"})
+	}
+	var body struct {
+		Label string `json:"label"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+	metaPath := filepath.Join(resolveModelsDir(), "versions", version, "meta.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "version not found"})
+	}
+	var meta ModelVersionMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	meta.Label = strings.TrimSpace(body.Label)
+	b, _ := json.Marshal(meta)
+	os.WriteFile(metaPath, b, 0o644) //nolint:errcheck
+	return c.JSON(meta)
+}
+
+// deleteModelVersion removes a stored version. The active version cannot be deleted.
+func deleteModelVersion(c *fiber.Ctx) error {
+	version := c.Params("version")
+	if !validVersionName(version) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid version"})
+	}
+	if version == readActiveVersion() {
+		return c.Status(409).JSON(fiber.Map{"error": "cannot delete the active version — deploy another version first"})
+	}
+	dir := filepath.Join(resolveModelsDir(), "versions", version)
+	if !fileExists(dir) {
+		return c.Status(404).JSON(fiber.Map{"error": "version not found"})
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	log.Printf("[ModelVersion] Deleted version %s", version)
+	return c.JSON(fiber.Map{"deleted": version})
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

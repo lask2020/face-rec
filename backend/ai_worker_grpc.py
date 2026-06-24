@@ -293,9 +293,12 @@ PLATE_COOLDOWN_DURATION = 10.0  # don't re-report same plate for 10 s
 MIN_PLATE_FLUSH_CONF   = float(os.getenv("MIN_PLATE_FLUSH_CONF", "0.25"))  # discard very noisy invalids
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
-# Frames with confidence AT OR ABOVE this threshold are captured as training data.
-# High-confidence detections make reliable auto-labeled ground truth.
-TRAINING_CAPTURE_CONF_MIN = float(os.getenv("TRAINING_CAPTURE_CONF_MIN", "0.80"))
+# Frames with confidence AT OR ABOVE this threshold are captured for training review.
+# Set to a medium value (not just very-high) so uncertain reads — where the model
+# misses or misreads characters — flow into the pending queue. The reviewer can add
+# missing boxes / fix classes in the UI, which is exactly the data that improves the
+# model on its weak spots. Tune via TRAINING_CAPTURE_CONF_MIN env var.
+TRAINING_CAPTURE_CONF_MIN = float(os.getenv("TRAINING_CAPTURE_CONF_MIN", "0.45"))
 # Max frames per track to send as training data (pick highest-confidence ones)
 TRAINING_MAX_FRAMES_PER_TRACK = int(os.getenv("TRAINING_MAX_FRAMES_PER_TRACK", "3"))
 
