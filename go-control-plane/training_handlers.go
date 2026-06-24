@@ -655,6 +655,22 @@ func BroadcastFinetuneTask(task *facerec.FrameTask) int {
 	return delivered
 }
 
+// SendFinetuneToWorker sends a finetune task to a specific worker by ID.
+// Returns true if the worker was found and task was delivered.
+func SendFinetuneToWorker(workerID string, task *facerec.FrameTask) bool {
+	activeWorkersMu.Lock()
+	ws := make([]*AIWorkerSession, len(activeWorkers))
+	copy(ws, activeWorkers)
+	activeWorkersMu.Unlock()
+
+	for _, w := range ws {
+		if w.id == workerID {
+			return w.sendBlocking(task, 10*time.Second)
+		}
+	}
+	return false
+}
+
 // exportDatasetToDir writes the approved YOLO dataset to a temp directory and
 // returns the path to data.yaml (or an error).
 func exportDatasetToDir(dir string) (string, error) {
@@ -755,7 +771,8 @@ func resolveModelsDir() string {
 
 func startFinetune(c *fiber.Ctx) error {
 	var body struct {
-		Epochs int `json:"epochs"`
+		Epochs   int    `json:"epochs"`
+		WorkerID string `json:"worker_id"`
 	}
 	_ = c.BodyParser(&body)
 
@@ -839,12 +856,22 @@ func startFinetune(c *fiber.Ctx) error {
 			FinetuneEpochs:       epochs,
 			RoboflowApiKey:       getSettingValue("roboflow_api_key"),
 		}
-		delivered := BroadcastFinetuneTask(task)
-		if delivered == 0 {
-			finetuneJob.setError("no AI workers connected — cannot start training")
-			// Clean up S3
-			S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
-			return
+		var delivered int
+		if body.WorkerID != "" {
+			if SendFinetuneToWorker(body.WorkerID, task) {
+				delivered = 1
+			} else {
+				finetuneJob.setError(fmt.Sprintf("worker %s not found or not connected", body.WorkerID))
+				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
+				return
+			}
+		} else {
+			delivered = BroadcastFinetuneTask(task)
+			if delivered == 0 {
+				finetuneJob.setError("no AI workers connected — cannot start training")
+				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
+				return
+			}
 		}
 		finetuneJob.appendLog(fmt.Sprintf("Training started on %d worker(s)", delivered))
 		// Status stays "running" — worker will send FinetuneProgress back via gRPC

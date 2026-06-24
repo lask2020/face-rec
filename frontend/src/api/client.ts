@@ -461,11 +461,11 @@ export const trainingApi = {
     return `/api/training/plates/export?${p.toString()}`;
   },
 
-  startFinetune: (epochs: number): Promise<{ status: string }> =>
+  startFinetune: (epochs: number, workerId?: string): Promise<{ status: string }> =>
     request('/training/plates/finetune', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ epochs }),
+      body: JSON.stringify({ epochs, ...(workerId ? { worker_id: workerId } : {}) }),
     }),
 
   stopFinetune: (): Promise<{ status: string }> =>
@@ -506,6 +506,19 @@ export interface FinetuneStatus {
   log: string[];
   error: string;
 }
+
+export interface Worker {
+  id: string;
+  connected_at: string;
+  uptime: string;
+  avg_process_ms: number;
+  is_paused: boolean;
+  cameras: { id: number; name: string }[];
+}
+
+export const workersApi = {
+  list: (): Promise<{ workers: Worker[] }> => request('/workers'),
+};
 
 export const settingsApi = {
   get: (key: string): Promise<{ key: string; value: string }> =>

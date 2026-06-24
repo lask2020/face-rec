@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { trainingApi, modelApi, settingsApi } from '../api/client';
-import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion } from '../api/client';
+import { trainingApi, modelApi, settingsApi, workersApi } from '../api/client';
+import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion, Worker } from '../api/client';
 
 const LIMIT = 20;
 
@@ -398,6 +398,8 @@ export default function TrainingReview() {
   const [roboflowKey, setRoboflowKey] = useState('');
   const [roboflowKeySaved, setRoboflowKeySaved] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
+  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [selectedWorker, setSelectedWorker] = useState<string>('');
   const logBoxRef = useRef<HTMLDivElement>(null);
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
@@ -442,6 +444,13 @@ export default function TrainingReview() {
     settingsApi.get('roboflow_api_key').then((s) => {
       if (s.value) setRoboflowKey(s.value);
     }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const load = () => workersApi.list().then((r) => setWorkers(r.workers)).catch(() => {});
+    load();
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
   }, []);
 
   // Poll finetune status on load, and every 2s while running
@@ -571,7 +580,7 @@ export default function TrainingReview() {
     if (finetuning || finetune?.status === 'running') return;
     setFinetuning(true);
     try {
-      await trainingApi.startFinetune(epochs);
+      await trainingApi.startFinetune(epochs, selectedWorker || undefined);
       setFinetuning(false);
     } catch (e: unknown) {
       alert('Failed to start training: ' + (e instanceof Error ? e.message : String(e)));
@@ -707,6 +716,24 @@ export default function TrainingReview() {
           >
             Export ZIP
           </a>
+          <select
+            value={selectedWorker}
+            onChange={(e) => setSelectedWorker(e.target.value)}
+            disabled={finetune?.status === 'running'}
+            style={{
+              padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)',
+              background: 'var(--bg-input)', color: 'var(--text)', fontSize: 12,
+              maxWidth: 180,
+            }}
+          >
+            <option value="">All workers ({workers.length})</option>
+            {workers.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.id.slice(0, 8)} · {w.avg_process_ms.toFixed(0)}ms
+                {w.cameras.length > 0 ? ` · ${w.cameras.map(c => c.name).join(', ')}` : ''}
+              </option>
+            ))}
+          </select>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <input
               type="password"
