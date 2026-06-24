@@ -166,7 +166,11 @@ def _resolve_models_dir() -> str:
             data_root = "backend/data"
         else:
             data_root = "data"
-    return os.path.join(data_root, "models")
+    # Return an ABSOLUTE path. ultralytics changes the working directory during
+    # training, so any relative path resolved here would break afterwards (model
+    # save, ONNX export, version dir, upload). Resolving to absolute up front
+    # keeps every downstream path stable regardless of CWD.
+    return os.path.abspath(os.path.join(data_root, "models"))
 
 _MODELS_DIR = _resolve_models_dir()
 

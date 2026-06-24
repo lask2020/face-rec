@@ -684,6 +684,50 @@ def track_flusher(send_queue, stop_event=None):
                 logger.error(f"Error in track_flusher: {e}")
 
 
+def _rewrite_dataset_yaml(yaml_path: str, send_queue) -> str:
+    """
+    Rewrite a YOLO data.yaml so train/val point at the real directory the dataset
+    was extracted into on this machine. The control plane writes absolute paths
+    from its own temp dir, which are invalid on the worker. We derive the correct
+    paths from the yaml's own location (zip root) and the standard YOLO layout.
+    """
+    import yaml as _yaml
+
+    root = os.path.dirname(os.path.abspath(yaml_path))
+    try:
+        with open(yaml_path) as f:
+            cfg = _yaml.safe_load(f) or {}
+
+        def resolve_split(*candidates):
+            for sub in candidates:
+                cand = os.path.join(root, sub, "images")
+                if os.path.isdir(cand):
+                    return cand
+            return None
+
+        train_dir = resolve_split("train")
+        val_dir = resolve_split("valid", "val")
+
+        # Use an absolute `path` root + relative splits so ultralytics resolves
+        # against the dataset dir, not its global datasets_dir setting.
+        cfg["path"] = root
+        if train_dir:
+            cfg["train"] = os.path.relpath(train_dir, root)
+        if val_dir:
+            cfg["val"] = os.path.relpath(val_dir, root)
+            cfg.pop("valid", None)
+
+        with open(yaml_path, "w") as f:
+            _yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
+
+        _send_finetune_progress(send_queue, type="info",
+                                message=f"Rewrote data.yaml — path={root} train={cfg.get('train')} val={cfg.get('val')}")
+    except Exception as e:
+        _send_finetune_progress(send_queue, type="info",
+                                message=f"Warning: could not rewrite data.yaml: {e}")
+    return yaml_path
+
+
 def _upload_model_file(http_url: str, version: str, file_path: str, send_queue) -> bool:
     """Upload a trained model file to the control plane via raw PUT body. Returns True on success."""
     import urllib.request
@@ -761,6 +805,12 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
                 if cctv_yaml:
                     break
             _send_finetune_progress(send_queue, type="info", message=f"Dataset extracted — data.yaml: {cctv_yaml}")
+
+            # The data.yaml written by the control plane carries absolute paths
+            # from ITS temp dir, which don't exist here. Rewrite train/val to point
+            # at the actual extracted location on this worker.
+            if cctv_yaml:
+                cctv_yaml = _rewrite_dataset_yaml(cctv_yaml, send_queue)
         except Exception as e:
             _send_finetune_progress(send_queue, type="info",
                                     message=f"Warning: could not download CCTV dataset: {e}. Training with Roboflow datasets only.")
