@@ -850,25 +850,34 @@ export default function TrainingReview() {
           >
             Export ZIP
           </a>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
-            {/* Worker selector rows */}
-            {[{ id: '', name: '', uptime: '', avg_process_ms: 0, is_paused: false, cameras: [], connected_at: '' } as Worker, ...workers].map((w, idx) => {
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 220 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>Train on worker</span>
+            {[{ id: '', name: '', uptime: '', avg_process_ms: 0, is_paused: false, cameras: [], connected_at: '' } as Worker, ...workers].map((w) => {
               const isAll = w.id === '';
-              const label = isAll
-                ? `All workers (${workers.length})`
-                : (w.name || w.id.slice(0, 8));
               const isSelected = selectedWorker === w.id;
               const isRenaming = renamingWorker === w.id && !isAll;
               return (
                 <div key={w.id || '__all'} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {!isAll && (
+                    isRenaming ? (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 2px' }}>✏️</span>
+                    ) : (
+                      <button
+                        title="Rename"
+                        onClick={() => { setRenamingWorker(w.id); setRenameValue(w.name || ''); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, padding: '2px 3px', lineHeight: 1 }}
+                      >✏️</button>
+                    )
+                  )}
+                  {isAll && <span style={{ display: 'inline-block', width: 20 }} />}
                   <button
-                    onClick={() => !isAll || workers.length !== 1 ? setSelectedWorker(w.id) : null}
+                    onClick={() => setSelectedWorker(w.id)}
                     disabled={finetune?.status === 'running'}
                     style={{
-                      flex: 1, textAlign: 'left', padding: '4px 8px', borderRadius: 6, fontSize: 12,
+                      flex: 1, textAlign: 'left', padding: '5px 9px', borderRadius: 6, fontSize: 12,
                       border: isSelected ? '1px solid var(--accent)' : '1px solid var(--border)',
                       background: isSelected ? 'color-mix(in srgb, var(--accent) 15%, var(--bg))' : 'var(--bg-input)',
-                      color: 'var(--text)', cursor: 'pointer',
+                      color: 'var(--text)', cursor: finetune?.status === 'running' ? 'not-allowed' : 'pointer',
                     }}
                   >
                     {isRenaming ? (
@@ -888,22 +897,17 @@ export default function TrainingReview() {
                         onClick={(e) => e.stopPropagation()}
                         style={{ background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', width: '100%', fontSize: 12 }}
                       />
+                    ) : isAll ? (
+                      <span>Auto-select <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>({workers.length} connected)</span></span>
                     ) : (
                       <span>
-                        {label}
-                        {!isAll && <span style={{ color: 'var(--text-muted)', marginLeft: 4, fontSize: 11 }}>
-                          · {w.avg_process_ms.toFixed(0)}ms{w.is_paused ? ' ⏸' : ''}
-                        </span>}
+                        {w.name || w.id.slice(0, 8)}
+                        <span style={{ color: 'var(--text-muted)', marginLeft: 6, fontSize: 11 }}>
+                          {w.avg_process_ms.toFixed(0)}ms{w.is_paused ? ' ⏸' : ''}
+                        </span>
                       </span>
                     )}
                   </button>
-                  {!isAll && !isRenaming && (
-                    <button
-                      title="Rename"
-                      onClick={() => { setRenamingWorker(w.id); setRenameValue(w.name || ''); }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 12, padding: '2px 4px' }}
-                    >✏️</button>
-                  )}
                 </div>
               );
             })}

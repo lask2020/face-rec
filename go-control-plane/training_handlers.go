@@ -866,9 +866,20 @@ func startFinetune(c *fiber.Ctx) error {
 				return
 			}
 		} else {
-			delivered = BroadcastFinetuneTask(task)
-			if delivered == 0 {
+			// No specific worker requested — pick the first available worker.
+			// Broadcasting to all workers would cause each to train independently
+			// and race on activateVersion, so we always train on exactly one worker.
+			w := getNextWorker()
+			if w == nil {
 				finetuneJob.setError("no AI workers connected — cannot start training")
+				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
+				return
+			}
+			if w.sendBlocking(task, 10*time.Second) {
+				delivered = 1
+				finetuneJob.appendLog(fmt.Sprintf("No worker specified — auto-selected worker %s", w.id))
+			} else {
+				finetuneJob.setError(fmt.Sprintf("worker %s queue full — cannot start training", w.id))
 				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
 				return
 			}
