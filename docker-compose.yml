@@ -75,19 +75,19 @@ services:
   # 6. AI Worker Node (Fleet)
   # Build with GPU_TYPE=rocm for AMD GPU, GPU_TYPE=cuda for NVIDIA, default=cpu
   # Set in .env file: echo "GPU_TYPE=rocm" > .env
-  ai-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-      args:
-        GPU_TYPE: ${GPU_TYPE:-cpu}
-    environment:
-      - CONTROL_PLANE_URL=control-plane:50051
-    volumes:
-      - face_models:/app/data   # persists face models; plate models pulled from S3
-    depends_on:
-      - control-plane
-    restart: always
+  # ai-worker:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #     args:
+  #       GPU_TYPE: ${GPU_TYPE:-cpu}
+  #   environment:
+  #     - CONTROL_PLANE_URL=control-plane:50051
+  #   volumes:
+  #     - face_models:/app/data   # persists face models; plate models pulled from S3
+  #   depends_on:
+  #     - control-plane
+  #   restart: always
 
   # 7. Stream Hub (RTSP/WebRTC/HLS) — replaces mediamtx
   go2rtc:
