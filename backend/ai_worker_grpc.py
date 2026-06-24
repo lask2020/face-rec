@@ -928,7 +928,6 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                             try:
                                 from app.license_plate.engine import _resolve_models_dir
                                 sync_models_from_control_plane(_resolve_models_dir())
-                                global license_plate_engine
                                 license_plate_engine = LicensePlateEngine()
                                 logger.info("LicensePlateEngine reloaded successfully")
                             except Exception as reload_err:
