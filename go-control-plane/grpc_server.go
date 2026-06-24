@@ -617,13 +617,22 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 	}
 
 	// Both plate handling and training-frame saves involve blocking S3 uploads.
-	// Run them in goroutines so the gRPC recv loop is never stalled.
+	// Run them in goroutines so the gRPC recv loop is never stalled, and bound
+	// each with a timeout so a hung/unreachable MinIO can't leak goroutines.
 	if len(result.PlateDetections) > 0 {
-		go handlePlateDetections(context.Background(), result, task)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			handlePlateDetections(ctx, result, task)
+		}()
 	}
 
 	if len(result.PlateTrainingFrames) > 0 {
-		go saveTrainingFrames(context.Background(), result.PlateTrainingFrames, task)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			saveTrainingFrames(ctx, result.PlateTrainingFrames, task)
+		}()
 	}
 
 	// If no faces detected, we skip face logging and S3 uploads
