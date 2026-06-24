@@ -17,6 +17,7 @@ var (
 	S3Client        *minio.Client
 	FacesBucket     = "faces"
 	SnapshotsBucket = "snapshots"
+	ModelsBucket    = "models"
 )
 
 func InitS3() {
@@ -41,6 +42,9 @@ func InitS3() {
 	if snapshots != "" {
 		SnapshotsBucket = snapshots
 	}
+	if mb := os.Getenv("S3_MODELS_BUCKET"); mb != "" {
+		ModelsBucket = mb
+	}
 
 	log.Printf("Initializing S3 Client connected to %s...", endpoint)
 
@@ -57,6 +61,7 @@ func InitS3() {
 	ctx := context.Background()
 	ensureBucketExists(ctx, FacesBucket)
 	ensureBucketExists(ctx, SnapshotsBucket)
+	ensureBucketExists(ctx, ModelsBucket)
 
 	log.Println("S3 Client initialized successfully.")
 }

@@ -460,4 +460,42 @@ export const trainingApi = {
     if (conf_max != null) p.set('conf_max', String(conf_max));
     return `/api/training/plates/export?${p.toString()}`;
   },
+
+  startFinetune: (): Promise<{ status: string }> =>
+    request('/training/plates/finetune', { method: 'POST' }),
+
+  finetuneStatus: (): Promise<FinetuneStatus> =>
+    request('/training/plates/finetune/status'),
 };
+
+export interface ModelVersion {
+  version: string;
+  trained_at: string;
+  samples: number;
+  epochs: number;
+  base_model: string;
+  has_onnx: boolean;
+  active: boolean;
+}
+
+export interface ModelVersionList {
+  versions: ModelVersion[];
+  active: string;
+}
+
+export const modelApi = {
+  listVersions: (): Promise<ModelVersionList> =>
+    request('/training/models/versions'),
+
+  deploy: (version: string): Promise<{ deployed: string; status: string }> =>
+    request(`/training/models/versions/${encodeURIComponent(version)}/deploy`, { method: 'POST' }),
+};
+
+export interface FinetuneStatus {
+  status: 'idle' | 'running' | 'done' | 'error';
+  started_at: string | null;
+  epoch: number;
+  epochs: number;
+  log: string[];
+  error: string;
+}

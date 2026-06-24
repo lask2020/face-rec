@@ -26,7 +26,8 @@ type FrameTask struct {
 	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	ImageData      []byte                 `protobuf:"bytes,2,opt,name=image_data,json=imageData,proto3" json:"image_data,omitempty"` // JPEG bytes
 	IsRegistration bool                   `protobuf:"varint,3,opt,name=is_registration,json=isRegistration,proto3" json:"is_registration,omitempty"`
-	DetectMode     string                 `protobuf:"bytes,4,opt,name=detect_mode,json=detectMode,proto3" json:"detect_mode,omitempty"` // "face" | "plate" | "both"  (default: "face")
+	DetectMode     string                 `protobuf:"bytes,4,opt,name=detect_mode,json=detectMode,proto3" json:"detect_mode,omitempty"`        // "face" | "plate" | "both"  (default: "face")
+	ReloadModels   bool                   `protobuf:"varint,5,opt,name=reload_models,json=reloadModels,proto3" json:"reload_models,omitempty"` // signal worker to reload models from disk (no image needed)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -87,6 +88,13 @@ func (x *FrameTask) GetDetectMode() string {
 		return x.DetectMode
 	}
 	return ""
+}
+
+func (x *FrameTask) GetReloadModels() bool {
+	if x != nil {
+		return x.ReloadModels
+	}
+	return false
 }
 
 type InferenceResult struct {
@@ -414,14 +422,15 @@ var File_facerec_proto protoreflect.FileDescriptor
 
 const file_facerec_proto_rawDesc = "" +
 	"\n" +
-	"\rfacerec.proto\x12\afacerec\"\x8d\x01\n" +
+	"\rfacerec.proto\x12\afacerec\"\xb2\x01\n" +
 	"\tFrameTask\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
 	"image_data\x18\x02 \x01(\fR\timageData\x12'\n" +
 	"\x0fis_registration\x18\x03 \x01(\bR\x0eisRegistration\x12\x1f\n" +
 	"\vdetect_mode\x18\x04 \x01(\tR\n" +
-	"detectMode\"\xc0\x02\n" +
+	"detectMode\x12#\n" +
+	"\rreload_models\x18\x05 \x01(\bR\freloadModels\"\xc0\x02\n" +
 	"\x0fInferenceResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x122\n" +
 	"\n" +

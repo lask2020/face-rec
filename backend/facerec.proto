@@ -13,6 +13,7 @@ message FrameTask {
   bytes image_data = 2;        // JPEG bytes
   bool is_registration = 3;
   string detect_mode = 4;      // "face" | "plate" | "both"  (default: "face")
+  bool reload_models = 5;      // signal worker to reload models from disk (no image needed)
 }
 
 message InferenceResult {

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { trainingApi } from '../api/client';
-import type { TrainingSample, TrainingStats, CharLabel } from '../api/client';
+import { trainingApi, modelApi } from '../api/client';
+import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion } from '../api/client';
 
 const LIMIT = 20;
 
@@ -391,6 +391,12 @@ export default function TrainingReview() {
   const [showStats, setShowStats] = useState(false);
   const [clearModal, setClearModal] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [finetune, setFinetune] = useState<FinetuneStatus | null>(null);
+  const [finetuning, setFinetuning] = useState(false);
+  const logBoxRef = useRef<HTMLDivElement>(null);
+  const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
+  const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
@@ -417,6 +423,42 @@ export default function TrainingReview() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadStats(); }, [loadStats]);
+
+  const loadVersions = useCallback(async () => {
+    try {
+      const r = await modelApi.listVersions();
+      setModelVersions(r.versions);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadVersions(); }, [loadVersions]);
+
+  // Poll finetune status on load, and every 2s while running
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const s = await trainingApi.finetuneStatus();
+        if (!cancelled) setFinetune(s);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const id = setInterval(async () => {
+      const s = await trainingApi.finetuneStatus().catch(() => null);
+      if (cancelled || !s) return;
+      setFinetune(s);
+      if (s.status !== 'running') {
+        clearInterval(id);
+        if (s.status === 'done') loadVersions(); // refresh versions list after training
+      }
+    }, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [finetuning, loadVersions]);
+
+  // Auto-scroll log box to bottom
+  useEffect(() => {
+    if (logBoxRef.current) logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+  }, [finetune?.log?.length]);
 
   useEffect(() => {
     trainingApi.exportPreview('approved', confMax ? Number(confMax) : undefined)
@@ -487,6 +529,31 @@ export default function TrainingReview() {
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(samples.map((s) => s.id)));
+    }
+  };
+
+  const handleDeploy = async (version: string) => {
+    if (deployingVersion) return;
+    setDeployingVersion(version);
+    try {
+      await modelApi.deploy(version);
+      await loadVersions();
+    } catch (e: unknown) {
+      alert('Deploy failed: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setDeployingVersion(null);
+    }
+  };
+
+  const handleStartFinetune = async () => {
+    if (finetuning || finetune?.status === 'running') return;
+    setFinetuning(true);
+    try {
+      await trainingApi.startFinetune();
+      setFinetuning(false);
+    } catch (e: unknown) {
+      alert('Failed to start training: ' + (e instanceof Error ? e.message : String(e)));
+      setFinetuning(false);
     }
   };
 
@@ -606,14 +673,152 @@ export default function TrainingReview() {
           >
             Export ZIP
           </a>
+          <button
+            onClick={handleStartFinetune}
+            disabled={finetuning || finetune?.status === 'running'}
+            style={{
+              padding: '7px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none',
+              cursor: finetuning || finetune?.status === 'running' ? 'not-allowed' : 'pointer',
+              background: finetune?.status === 'running' ? '#78350f' : '#7c3aed',
+              color: '#fff', opacity: finetuning ? 0.7 : 1,
+            }}
+          >
+            {finetune?.status === 'running' ? 'Training...' : 'Train Model'}
+          </button>
         </div>
       </div>
 
       {/* Class distribution */}
       {showStats && stats && (
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', marginBottom: 12 }}>
-          <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600 }}>Class distribution (approved samples)</p>
+          <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600 }}>Class distribution (pending + approved)</p>
           <ClassDistChart data={stats.by_class} />
+        </div>
+      )}
+
+      {/* Finetune status panel */}
+      {finetune && finetune.status !== 'idle' && (
+        <div style={{
+          background: 'var(--bg-card)', border: `1px solid ${
+            finetune.status === 'error' ? '#dc2626' :
+            finetune.status === 'done' ? '#16a34a' : '#7c3aed'
+          }`,
+          borderRadius: 8, padding: '12px 16px', marginBottom: 12,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <span style={{
+              fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+              background: finetune.status === 'error' ? '#dc2626' : finetune.status === 'done' ? '#16a34a' : '#7c3aed',
+              color: '#fff', textTransform: 'uppercase',
+            }}>
+              {finetune.status}
+            </span>
+            {finetune.status === 'running' && finetune.epochs > 0 && (
+              <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                Epoch {finetune.epoch} / {finetune.epochs}
+              </span>
+            )}
+            {finetune.status === 'running' && finetune.epochs > 0 && (
+              <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{
+                  width: `${Math.round((finetune.epoch / finetune.epochs) * 100)}%`,
+                  height: '100%', background: '#7c3aed', transition: 'width 0.4s',
+                }} />
+              </div>
+            )}
+            {finetune.started_at && (
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 'auto' }}>
+                Started {new Date(finetune.started_at).toLocaleTimeString()}
+              </span>
+            )}
+          </div>
+          {finetune.status === 'error' && finetune.error && (
+            <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 6 }}>{finetune.error}</div>
+          )}
+          {finetune.status === 'done' && (
+            <div style={{ fontSize: 12, color: '#22c55e', marginBottom: 6 }}>
+              Model saved (.pt + .onnx). Restart the AI worker to apply the new model.
+            </div>
+          )}
+          {finetune.log && finetune.log.length > 0 && (
+            <div
+              ref={logBoxRef}
+              style={{
+                background: '#0a0a0a', borderRadius: 6, padding: '8px 10px',
+                maxHeight: 180, overflowY: 'auto', fontFamily: 'monospace', fontSize: 11,
+                color: '#a3a3a3', lineHeight: 1.6,
+              }}
+            >
+              {finetune.log.map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Model versions */}
+      {modelVersions.length > 0 && (
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12 }}>
+          <button
+            onClick={() => setShowVersions(v => !v)}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '10px 16px', background: 'transparent', border: 'none', cursor: 'pointer',
+              color: 'var(--text)', fontSize: 13, fontWeight: 600,
+            }}
+          >
+            <span>Model Versions ({modelVersions.length})</span>
+            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{showVersions ? '▲' : '▼'}</span>
+          </button>
+
+          {showVersions && (
+            <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {modelVersions.map((v) => (
+                <div key={v.version} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                  borderRadius: 6, background: v.active ? 'rgba(124,58,237,0.1)' : 'transparent',
+                  border: v.active ? '1px solid #7c3aed' : '1px solid transparent',
+                }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>
+                        {v.version.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/, '$1-$2-$3 $4:$5:$6')}
+                      </span>
+                      {v.active && (
+                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#7c3aed', color: '#fff', fontWeight: 700 }}>
+                          ACTIVE
+                        </span>
+                      )}
+                      {!v.has_onnx && (
+                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#78350f', color: '#fbbf24' }}>
+                          .pt only
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                      {v.samples > 0 ? `${v.samples} samples · ` : ''}{v.epochs} epochs · {v.base_model}
+                    </div>
+                  </div>
+                  {!v.active && (
+                    <button
+                      onClick={() => handleDeploy(v.version)}
+                      disabled={!!deployingVersion}
+                      style={{
+                        padding: '5px 12px', fontSize: 12, fontWeight: 600, borderRadius: 6,
+                        border: 'none', cursor: deployingVersion ? 'not-allowed' : 'pointer',
+                        background: deployingVersion === v.version ? '#78350f' : '#7c3aed',
+                        color: '#fff', opacity: deployingVersion && deployingVersion !== v.version ? 0.5 : 1,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {deployingVersion === v.version ? 'Deploying...' : 'Deploy'}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

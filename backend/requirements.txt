@@ -6,24 +6,17 @@ grpcio>=1.60.0
 grpcio-tools>=1.60.0
 protobuf>=4.25.0
 
-# ─── ONNX Runtime Engine (Choose ONE based on your hardware) ───
-# Note: Do not install multiple onnxruntime packages in the same environment.
-
-# 1. CPU (Default)
+# ─── ONNX Runtime Engine ───────────────────────────────────────────────────────
+# GPU_TYPE build arg in Dockerfile selects the right package automatically.
+# For local/native installs pick ONE manually:
+#   cpu:     onnxruntime>=1.19.0
+#   cuda:    onnxruntime-gpu>=1.19.0
+#   rocm:    onnxruntime-rocm>=1.19.0
+#   openvino:onnxruntime-openvino>=1.19.0  (Intel)
+#   directml:onnxruntime-directml>=1.19.0  (Windows AMD/Intel)
+#
+# Default (overridden by Dockerfile for GPU builds):
 onnxruntime>=1.19.0
-
-# 2. NVIDIA GPU (CUDA)
-# onnxruntime-gpu>=1.19.0
-
-# 3. Intel Onboard GPU / CPU (OpenVINO)
-# onnxruntime-openvino>=1.19.0
-
-# 4. AMD GPU (Linux ROCm)
-# onnxruntime-rocm>=1.19.0
-
-# 5. AMD/Intel GPU (Windows DirectML)
-# onnxruntime-directml>=1.19.0
-# Then set env: ONNX_PROVIDER=DmlExecutionProvider
 
 # ─── License Plate Detection ───
 ultralytics>=8.4.0

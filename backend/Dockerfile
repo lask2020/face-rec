@@ -1,10 +1,21 @@
 # syntax=docker/dockerfile:1
 # Enable BuildKit cache mounts for apt and pip — dramatically speeds up rebuilds.
+#
+# GPU_TYPE build arg selects the GPU backend automatically:
+#   cpu    (default) — onnxruntime CPU, torch CPU
+#   cuda              — onnxruntime-gpu, torch CUDA 12.1
+#   rocm              — onnxruntime-rocm, torch ROCm 6.2  (AMD GPU on Linux)
+#
+# Usage:
+#   docker build --build-arg GPU_TYPE=rocm -t ai-worker .
+#   or via docker-compose (see GPU_TYPE arg in compose file)
+
+ARG GPU_TYPE=cpu
 
 # ── Stage 1: builder ─────────────────────────────────────────────────────────
-# Has build-essential for compiling native wheels (insightface, opencv, etc.)
-# Not included in the final image.
 FROM python:3.9-slim AS builder
+
+ARG GPU_TYPE
 
 WORKDIR /app
 
@@ -16,8 +27,24 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         build-essential
 
 COPY requirements.txt .
+
+# Install base deps (includes CPU onnxruntime from requirements.txt)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
+
+# Override torch + onnxruntime for GPU builds
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "$GPU_TYPE" = "cuda" ]; then \
+        pip install --upgrade \
+            torch torchvision \
+            --index-url https://download.pytorch.org/whl/cu121 && \
+        pip install --upgrade onnxruntime-gpu; \
+    elif [ "$GPU_TYPE" = "rocm" ]; then \
+        pip install --upgrade \
+            torch torchvision \
+            --index-url https://download.pytorch.org/whl/rocm6.2 && \
+        pip install --upgrade onnxruntime-rocm; \
+    fi
 
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ services:
       - S3_SECRET_KEY=admin12345
       - S3_FACES_BUCKET=faces
       - S3_SNAPSHOTS_BUCKET=snapshots
+      - S3_MODELS_BUCKET=models
       - QDRANT_URL=http://qdrant:6333
     depends_on:
       - redis
@@ -72,27 +73,21 @@ services:
     restart: always
 
   # 6. AI Worker Node (Fleet)
-  # ai-worker:
-  #   build:
-  #     context: ./backend
-  #     dockerfile: Dockerfile
-  #   environment:
-  #     - CONTROL_PLANE_URL=control-plane:50051
-  #     # To force a specific ONNX Execution Provider:
-  #     # - ONNX_PROVIDER=OpenVINOExecutionProvider   # For Intel GPU/CPU via OpenVINO
-  #     # - ONNX_PROVIDER=ROCmExecutionProvider       # For AMD GPU via ROCm (Linux)
-  #     # - ONNX_PROVIDER=CUDAExecutionProvider       # For NVIDIA GPU via CUDA
-  #     # - ONNX_PROVIDER=DmlExecutionProvider        # For AMD/Intel GPU via Windows DirectML
-  #   volumes:
-  #     # Persist downloaded ONNX models (CodeFormer + Real-ESRGAN) across rebuilds.
-  #     # Models auto-download on first start — no need to bake them into the image.
-  #     - face_models:/app/data
-  #   # Passthrough Intel/AMD onboard GPU devices (Linux only):
-  #   # devices:
-  #   #   - /dev/dri:/dev/dri
-  #   depends_on:
-  #     - control-plane
-  #   restart: always
+  # Build with GPU_TYPE=rocm for AMD GPU, GPU_TYPE=cuda for NVIDIA, default=cpu
+  # Set in .env file: echo "GPU_TYPE=rocm" > .env
+  ai-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        GPU_TYPE: ${GPU_TYPE:-cpu}
+    environment:
+      - CONTROL_PLANE_URL=control-plane:50051
+    volumes:
+      - face_models:/app/data   # persists face models; plate models pulled from S3
+    depends_on:
+      - control-plane
+    restart: always
 
   # 7. Stream Hub (RTSP/WebRTC/HLS) — replaces mediamtx
   go2rtc:

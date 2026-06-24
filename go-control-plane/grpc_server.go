@@ -104,6 +104,23 @@ func (w *AIWorkerSession) trySend(task *facerec.FrameTask) (sent bool) {
 	}
 }
 
+// sendBlocking enqueues a task, waiting up to timeout for queue space.
+// Used for rare control messages (e.g. reload_models) that must not be dropped
+// just because the frame queue is momentarily full.
+func (w *AIWorkerSession) sendBlocking(task *facerec.FrameTask, timeout time.Duration) (sent bool) {
+	defer func() {
+		if recover() != nil {
+			sent = false // send on closed channel
+		}
+	}()
+	select {
+	case w.sendCh <- task:
+		return true
+	case <-time.After(timeout):
+		return false // queue stayed full past timeout
+	}
+}
+
 type PendingTask struct {
 	CameraID   uint
 	Timestamp  int64
@@ -236,6 +253,30 @@ func deregisterWorker(w *AIWorkerSession) {
 			delete(cameraToWorker, camID)
 		}
 	}
+}
+
+// BroadcastReloadModels sends a reload_models signal to every connected worker.
+// Workers reinitialise their LicensePlateEngine from disk on receipt.
+// Returns the number of workers that successfully received the signal.
+func BroadcastReloadModels() int {
+	activeWorkersMu.Lock()
+	workers := make([]*AIWorkerSession, len(activeWorkers))
+	copy(workers, activeWorkers)
+	activeWorkersMu.Unlock()
+
+	task := &facerec.FrameTask{ReloadModels: true}
+	delivered := 0
+	for _, w := range workers {
+		// Block briefly so a momentarily-full frame queue doesn't drop the
+		// reload signal. 5s is generous given senderLoop drains continuously.
+		if w.sendBlocking(task, 5*time.Second) {
+			delivered++
+		} else {
+			log.Printf("[BroadcastReloadModels] worker %s queue full — reload NOT delivered", w.id)
+		}
+	}
+	log.Printf("[BroadcastReloadModels] delivered to %d/%d worker(s)", delivered, len(workers))
+	return delivered
 }
 
 func rebalanceWorkers() {

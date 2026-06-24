@@ -99,6 +99,11 @@ IF "%NEED_INSTALL%"=="1" (
     pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml onnxruntime-openvino >nul 2>&1
     pip install --quiet "%ONNX_PACKAGE%"
 
+    IF "%TARGET%"=="directml" (
+        echo Installing torch-directml for AMD/Intel GPU training...
+        pip install --quiet torch-directml
+    )
+
     REM Save marker so next build can skip this step
     FOR %%F IN (requirements.txt) DO SET REQ_STAMP=%%~zF_%%~tF
     echo %TARGET%^|%REQ_STAMP%>"%MARKER_FILE%"

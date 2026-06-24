@@ -71,6 +71,13 @@ func main() {
 	api.Get("/training/plates/:id", getTrainingSample)
 	api.Put("/training/plates/:id", updateTrainingSample)
 	api.Post("/training/plates/bulk", bulkUpdateTrainingSamples)
+	api.Post("/training/plates/finetune", startFinetune)
+	api.Get("/training/plates/finetune/status", getFinetuneStatus)
+	api.Get("/training/models/versions", listModelVersions)
+	api.Post("/training/models/versions/:version/deploy", deployModelVersion)
+	api.Get("/models/manifest", getModelsManifest)
+	api.Get("/models/download/:filename", downloadModelFile)
+	api.Post("/models/push", pushModelsHandler)
 
 	// Workers
 	api.Get("/workers", GetWorkers)

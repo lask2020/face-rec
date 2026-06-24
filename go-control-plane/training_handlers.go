@@ -2,12 +2,17 @@ package main
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -358,23 +363,28 @@ func getTrainingStats(c *fiber.Ctx) error {
 		ClassName string `json:"class_name"`
 		Count     int64  `json:"count"`
 	}
-	// Fix: select both columns so the raw_text fallback actually works
-	var approvedSamples []PlateTrainingSample
-	DB.Where("status = 'approved'").Select("corrected_text, raw_text").Find(&approvedSamples)
+
+	// Count class distribution from char_labels JSON across all non-rejected samples.
+	// Using char_labels (per-character detections) is more accurate than parsing raw_text
+	// character-by-character, which breaks province codes like "BKK" → "B","K","K".
+	var samples []PlateTrainingSample
+	DB.Where("status != 'rejected' AND char_labels != '' AND char_labels != '[]'").
+		Select("char_labels").Find(&samples)
+
+	type charLabelEntry struct {
+		ClassName string `json:"class_name"`
+	}
 	classCounts := map[string]int64{}
-	for _, s := range approvedSamples {
-		text := s.CorrectedText
-		if text == "" {
-			text = s.RawText
+	for _, s := range samples {
+		var labels []charLabelEntry
+		if err := json.Unmarshal([]byte(s.CharLabels), &labels); err != nil {
+			continue
 		}
-		for _, ch := range text {
-			key := string(ch)
-			if key == " " || key == "-" {
-				continue
+		for _, lbl := range labels {
+			code := normalizeToCode(lbl.ClassName)
+			if _, ok := classIndex[code]; ok {
+				classCounts[code]++
 			}
-			// Normalize to code name so stats match MASTER_CLASSES
-			code := normalizeToCode(key)
-			classCounts[code]++
 		}
 	}
 
@@ -551,6 +561,317 @@ func getExportPreview(c *fiber.Ctx) error {
 	})
 }
 
+// ── Finetune job ──────────────────────────────────────────────────────────────
+
+type finetuneJobState struct {
+	mu        sync.Mutex
+	Status    string    `json:"status"`    // idle | running | done | error
+	StartedAt time.Time `json:"started_at"`
+	Epoch     int       `json:"epoch"`
+	Epochs    int       `json:"epochs"`
+	Log       []string  `json:"log"`
+	Error     string    `json:"error"`
+}
+
+var finetuneJob = &finetuneJobState{Status: "idle"}
+
+const maxFinetuneLog = 200
+
+func (j *finetuneJobState) appendLog(line string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Log = append(j.Log, line)
+	if len(j.Log) > maxFinetuneLog {
+		j.Log = j.Log[len(j.Log)-maxFinetuneLog:]
+	}
+}
+
+func (j *finetuneJobState) snapshot() map[string]interface{} {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	logCopy := make([]string, len(j.Log))
+	copy(logCopy, j.Log)
+	var startedAt interface{}
+	if j.Status != "idle" {
+		startedAt = j.StartedAt.Format(time.RFC3339)
+	}
+	return map[string]interface{}{
+		"status":     j.Status,
+		"started_at": startedAt,
+		"epoch":      j.Epoch,
+		"epochs":     j.Epochs,
+		"log":        logCopy,
+		"error":      j.Error,
+	}
+}
+
+// exportDatasetToDir writes the approved YOLO dataset to a temp directory and
+// returns the path to data.yaml (or an error).
+func exportDatasetToDir(dir string) (string, error) {
+	if S3Client == nil {
+		return "", fmt.Errorf("S3 not configured — cannot fetch training images")
+	}
+	var samples []PlateTrainingSample
+	DB.Where("status = 'approved'").Find(&samples)
+	if len(samples) == 0 {
+		return "", fmt.Errorf("no approved samples found")
+	}
+
+	rand.Shuffle(len(samples), func(i, j int) { samples[i], samples[j] = samples[j], samples[i] })
+	valCount := int(float64(len(samples)) * 0.1)
+	if valCount < 1 && len(samples) > 1 {
+		valCount = 1
+	}
+
+	splits := []struct {
+		name    string
+		samples []PlateTrainingSample
+	}{
+		{"train", samples[valCount:]},
+		{"valid", samples[:valCount]},
+	}
+
+	for _, sp := range splits {
+		for _, sub := range []string{"images", "labels"} {
+			if err := os.MkdirAll(filepath.Join(dir, sp.name, sub), 0755); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	for _, sp := range splits {
+		for i, s := range sp.samples {
+			labelLines := buildYoloLabel(s)
+			if labelLines == "" {
+				continue
+			}
+			if S3Client == nil || s.ImagePath == "" {
+				continue
+			}
+
+			// Fetch image first — only write label if image succeeds
+			obj, err := S3Client.GetObject(context.Background(), SnapshotsBucket, s.ImagePath, minio.GetObjectOptions{})
+			if err != nil {
+				continue
+			}
+			imgData, _ := io.ReadAll(obj)
+			obj.Close()
+			if len(imgData) == 0 {
+				continue
+			}
+
+			stem := fmt.Sprintf("%s_%05d", sp.name, i)
+			imgPath := filepath.Join(dir, sp.name, "images", stem+".jpg")
+			if err := os.WriteFile(imgPath, imgData, 0644); err != nil {
+				return "", err
+			}
+			lblPath := filepath.Join(dir, sp.name, "labels", stem+".txt")
+			if err := os.WriteFile(lblPath, []byte(labelLines), 0644); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	// data.yaml with absolute paths
+	classNames := make([]string, len(masterClasses))
+	for i, cls := range masterClasses {
+		classNames[i] = fmt.Sprintf("  - '%s'", cls)
+	}
+	yamlContent := fmt.Sprintf(
+		"nc: %d\nnames:\n%s\ntrain: %s\nval: %s\n",
+		len(masterClasses),
+		strings.Join(classNames, "\n"),
+		filepath.Join(dir, "train", "images"),
+		filepath.Join(dir, "valid", "images"),
+	)
+	yamlPath := filepath.Join(dir, "data.yaml")
+	if err := os.WriteFile(yamlPath, []byte(yamlContent), 0644); err != nil {
+		return "", err
+	}
+	return yamlPath, nil
+}
+
+func resolveModelsDir() string {
+	if root := os.Getenv("FACE_DATA_ROOT"); root != "" {
+		return filepath.Join(root, "models")
+	}
+	for _, candidate := range []string{"/app/data/models", "data/models", "backend/data/models"} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "data/models"
+}
+
+func startFinetune(c *fiber.Ctx) error {
+	finetuneJob.mu.Lock()
+	if finetuneJob.Status == "running" {
+		finetuneJob.mu.Unlock()
+		return c.Status(409).JSON(fiber.Map{"error": "finetune job already running"})
+	}
+	finetuneJob.Status = "running"
+	finetuneJob.StartedAt = time.Now()
+	finetuneJob.Epoch = 0
+	finetuneJob.Epochs = 0
+	finetuneJob.Log = nil
+	finetuneJob.Error = ""
+	finetuneJob.mu.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				finetuneJob.mu.Lock()
+				finetuneJob.Status = "error"
+				finetuneJob.Error = fmt.Sprintf("panic: %v", r)
+				finetuneJob.mu.Unlock()
+			}
+		}()
+
+		// Export dataset to temp dir
+		tmpDir, err := os.MkdirTemp("", "finetune_*")
+		if err != nil {
+			finetuneJob.mu.Lock()
+			finetuneJob.Status = "error"
+			finetuneJob.Error = "failed to create temp dir: " + err.Error()
+			finetuneJob.mu.Unlock()
+			return
+		}
+		defer os.RemoveAll(tmpDir)
+
+		finetuneJob.appendLog("Exporting approved samples to temp dir...")
+		dataYaml, err := exportDatasetToDir(tmpDir)
+		if err != nil {
+			finetuneJob.mu.Lock()
+			finetuneJob.Status = "error"
+			finetuneJob.Error = "export failed: " + err.Error()
+			finetuneJob.mu.Unlock()
+			return
+		}
+		finetuneJob.appendLog("Export complete. Starting training...")
+
+		modelsDir := resolveModelsDir()
+		baseModel := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
+		outputModel := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
+
+		pythonBin := os.Getenv("PYTHON_BIN")
+		if pythonBin == "" {
+			pythonBin = "python3"
+		}
+		scriptPath := os.Getenv("FINETUNE_SCRIPT")
+		if scriptPath == "" {
+			scriptPath = "backend/finetune_char_model.py"
+		}
+
+		epochsStr := os.Getenv("FINETUNE_EPOCHS")
+		if epochsStr == "" {
+			epochsStr = "30"
+		}
+
+		// Count approved samples for metadata
+		var sampleCount int64
+		DB.Model(&PlateTrainingSample{}).Where("status = 'approved'").Count(&sampleCount)
+
+		args := []string{
+			scriptPath,
+			"--data", dataYaml,
+			"--base-model", baseModel,
+			"--output", outputModel,
+			"--epochs", epochsStr,
+			"--samples", strconv.FormatInt(sampleCount, 10),
+		}
+
+		// Dataset folder sits next to the models folder: data/datasets/
+		roboflowBase := os.Getenv("ROBOFLOW_DATASET_BASE")
+		if roboflowBase == "" {
+			roboflowBase = filepath.Join(filepath.Dir(modelsDir), "datasets")
+		}
+		os.MkdirAll(roboflowBase, 0o755)
+		finetuneJob.appendLog("Dataset base: " + roboflowBase)
+
+		cmd := exec.Command(pythonBin, args...)
+		cmd.Stderr = os.Stderr
+		cmd.Env = append(os.Environ(),
+			"ROBOFLOW_DATASET_BASE="+roboflowBase,
+		)
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			finetuneJob.mu.Lock()
+			finetuneJob.Status = "error"
+			finetuneJob.Error = "stdout pipe: " + err.Error()
+			finetuneJob.mu.Unlock()
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
+			finetuneJob.mu.Lock()
+			finetuneJob.Status = "error"
+			finetuneJob.Error = "failed to start python: " + err.Error()
+			finetuneJob.mu.Unlock()
+			return
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			finetuneJob.appendLog(line)
+
+			var msg map[string]interface{}
+			if json.Unmarshal([]byte(line), &msg) == nil {
+				msgType, _ := msg["type"].(string)
+				switch msgType {
+				case "epoch":
+					epoch, _ := msg["epoch"].(float64)
+					epochs, _ := msg["epochs"].(float64)
+					finetuneJob.mu.Lock()
+					finetuneJob.Epoch = int(epoch)
+					finetuneJob.Epochs = int(epochs)
+					finetuneJob.mu.Unlock()
+				case "done":
+					version, _ := msg["version"].(string)
+					finetuneJob.mu.Lock()
+					finetuneJob.Status = "done"
+					finetuneJob.mu.Unlock()
+					if version != "" {
+						writeActiveVersion(version)
+						go pushModelsToS3(version)
+					}
+				case "error":
+					errMsg, _ := msg["message"].(string)
+					finetuneJob.mu.Lock()
+					finetuneJob.Status = "error"
+					finetuneJob.Error = errMsg
+					finetuneJob.mu.Unlock()
+				}
+			}
+		}
+
+		if err := cmd.Wait(); err != nil {
+			finetuneJob.mu.Lock()
+			if finetuneJob.Status == "running" {
+				finetuneJob.Status = "error"
+				finetuneJob.Error = "process exited: " + err.Error()
+			}
+			finetuneJob.mu.Unlock()
+			return
+		}
+
+		finetuneJob.mu.Lock()
+		if finetuneJob.Status == "running" {
+			finetuneJob.Status = "done"
+		}
+		finetuneJob.mu.Unlock()
+
+		log.Println("[Finetune] Job completed")
+	}()
+
+	return c.JSON(fiber.Map{"status": "started"})
+}
+
+func getFinetuneStatus(c *fiber.Ctx) error {
+	return c.JSON(finetuneJob.snapshot())
+}
+
 // buildYoloLabel converts char_labels JSON to YOLO .txt format.
 // Handles Thai unicode → code name conversion, and applies corrected_text override.
 func buildYoloLabel(s PlateTrainingSample) string {
@@ -580,4 +901,140 @@ func buildYoloLabel(s PlateTrainingSample) string {
 		lines = append(lines, fmt.Sprintf("%d %.6f %.6f %.6f %.6f", classID, lbl.CX, lbl.CY, lbl.BW, lbl.BH))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ── Model Version Management ──────────────────────────────────────────────────
+
+type ModelVersionMeta struct {
+	Version   string `json:"version"`
+	TrainedAt string `json:"trained_at"`
+	Samples   int    `json:"samples"`
+	Epochs    int    `json:"epochs"`
+	BaseModel string `json:"base_model"`
+	HasOnnx   bool   `json:"has_onnx"`
+	Active    bool   `json:"active"`
+}
+
+func listModelVersions(c *fiber.Ctx) error {
+	versionsDir := filepath.Join(resolveModelsDir(), "versions")
+	entries, err := os.ReadDir(versionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return c.JSON(fiber.Map{"versions": []interface{}{}})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	activeVersion := readActiveVersion()
+
+	var versions []ModelVersionMeta
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		metaPath := filepath.Join(versionsDir, e.Name(), "meta.json")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+		var meta ModelVersionMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+		onnxPath := filepath.Join(versionsDir, e.Name(), "thai_char_yolo26s.onnx")
+		meta.HasOnnx = fileExists(onnxPath)
+		meta.Active = meta.Version == activeVersion
+		versions = append(versions, meta)
+	}
+
+	// newest first
+	for i, j := 0, len(versions)-1; i < j; i, j = i+1, j-1 {
+		versions[i], versions[j] = versions[j], versions[i]
+	}
+
+	if versions == nil {
+		versions = []ModelVersionMeta{}
+	}
+	return c.JSON(fiber.Map{"versions": versions, "active": activeVersion})
+}
+
+func deployModelVersion(c *fiber.Ctx) error {
+	version := c.Params("version")
+	if version == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "version required"})
+	}
+
+	modelsDir := resolveModelsDir()
+	versionDir := filepath.Join(modelsDir, "versions", version)
+	if !fileExists(versionDir) {
+		return c.Status(404).JSON(fiber.Map{"error": "version not found"})
+	}
+
+	ptSrc := filepath.Join(versionDir, "thai_char_yolo26s.pt")
+	ptDst := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
+	if fileExists(ptSrc) {
+		if err := copyFile(ptSrc, ptDst); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "copy .pt failed: " + err.Error()})
+		}
+	}
+
+	onnxSrc := filepath.Join(versionDir, "thai_char_yolo26s.onnx")
+	onnxDst := filepath.Join(modelsDir, "thai_char_yolo26s.onnx")
+	if fileExists(onnxSrc) {
+		if err := copyFile(onnxSrc, onnxDst); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "copy .onnx failed: " + err.Error()})
+		}
+	}
+
+	writeActiveVersion(version)
+
+	// Push to S3 first, THEN broadcast reload — otherwise workers would pull the
+	// stale/partial model from S3 before the upload finishes. Run async so the
+	// HTTP response returns immediately; the actual reload happens in background.
+	go func() {
+		pushModelsToS3(version)
+		n := BroadcastReloadModels()
+		log.Printf("[ModelDeploy] version %s pushed to S3, reload delivered to %d worker(s)", version, n)
+	}()
+
+	log.Printf("[ModelDeploy] Deploying version %s — pushing to S3 then reloading workers", version)
+	return c.JSON(fiber.Map{"deployed": version, "status": "deploying"})
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func activeVersionPath() string {
+	return filepath.Join(resolveModelsDir(), "active_version.txt")
+}
+
+func readActiveVersion() string {
+	data, err := os.ReadFile(activeVersionPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func writeActiveVersion(version string) {
+	os.WriteFile(activeVersionPath(), []byte(version), 0644) //nolint:errcheck
 }

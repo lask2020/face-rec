@@ -30,6 +30,85 @@ from app.license_plate.validate import LicensePlateValidator
 
 license_plate_engine: LicensePlateEngine | None = None
 
+
+# ── Model sync from control plane S3 ─────────────────────────────────────────
+
+def sync_models_from_control_plane(models_dir: str) -> bool:
+    """
+    Download model files from Go control plane's /api/models/ endpoints.
+    Skips files that already exist locally with the same size.
+    Returns True if any file was downloaded.
+    """
+    import urllib.request
+    import json as _json
+
+    http_url = os.environ.get("CONTROL_PLANE_HTTP_URL", "").rstrip("/")
+    if not http_url:
+        grpc_url = os.environ.get("CONTROL_PLANE_URL", "")
+        if grpc_url:
+            host = grpc_url.split(":")[0]
+            http_url = f"http://{host}:8000"
+    if not http_url:
+        return False
+
+    manifest_url = f"{http_url}/api/models/manifest"
+    try:
+        with urllib.request.urlopen(manifest_url, timeout=15) as r:
+            manifest = _json.loads(r.read())
+    except Exception as e:
+        logger.warning(f"[ModelSync] Could not fetch manifest from {manifest_url}: {e}")
+        return False
+
+    files = manifest.get("files", [])
+    if not files:
+        logger.info("[ModelSync] Manifest is empty — no models in S3 yet")
+        return False
+
+    os.makedirs(models_dir, exist_ok=True)
+    downloaded = False
+
+    for fi in files:
+        name = fi.get("name", "")
+        if not name or name == "meta.json":
+            continue
+
+        local_path = os.path.join(models_dir, name)
+        remote_size = fi.get("size", -1)
+
+        # Skip if local file already has the same size
+        if os.path.exists(local_path) and os.path.getsize(local_path) == remote_size:
+            logger.debug(f"[ModelSync] {name} up-to-date ({remote_size} bytes) — skip")
+            continue
+
+        download_url = f"{http_url}/api/models/download/{name}"
+        logger.info(f"[ModelSync] Downloading {name} ({remote_size / 1024 / 1024:.1f} MB)...")
+
+        # Download to a temp file in the same dir, then atomically swap into place.
+        # This prevents a failed/partial download from corrupting the live model
+        # that the engine is about to load on reload.
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=models_dir, suffix=".tmp")
+        os.close(tmp_fd)
+        try:
+            urllib.request.urlretrieve(download_url, tmp_path)
+            # Verify the download is complete before swapping
+            if remote_size >= 0 and os.path.getsize(tmp_path) != remote_size:
+                raise IOError(
+                    f"size mismatch: got {os.path.getsize(tmp_path)}, expected {remote_size}"
+                )
+            os.replace(tmp_path, local_path)  # atomic on POSIX
+            logger.info(f"[ModelSync] {name} saved to {local_path}")
+            downloaded = True
+        except Exception as e:
+            logger.error(f"[ModelSync] Failed to download {name}: {e}")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    return downloaded
+
 # FFHQ 5-point landmark template for 512×512.
 # CodeFormer (and GFPGAN) were trained exclusively on FFHQ-aligned crops; using
 # InsightFace's ArcFace template instead causes severe face distortion because the
@@ -753,6 +832,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
     else:
         logger.warning("Face Restorer disabled (model not found or load failed).")
 
+    # Sync models from S3 via control plane before loading
+    from app.license_plate.engine import _resolve_models_dir
+    _models_dir = _resolve_models_dir()
+    logger.info(f"[ModelSync] Syncing models from control plane to {_models_dir} ...")
+    sync_models_from_control_plane(_models_dir)
+
     # Initialize License Plate Engine
     logger.info("Initializing License Plate Engine...")
     license_plate_engine = LicensePlateEngine()
@@ -836,6 +921,19 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                     for task in responses:
                         if stop_event and stop_event.is_set():
                             break
+
+                        # Hot-reload: sync latest model from S3 then reinitialise engine
+                        if getattr(task, 'reload_models', False):
+                            logger.info("Received reload_models signal — syncing from S3 and reinitialising LicensePlateEngine")
+                            try:
+                                from app.license_plate.engine import _resolve_models_dir
+                                sync_models_from_control_plane(_resolve_models_dir())
+                                global license_plate_engine
+                                license_plate_engine = LicensePlateEngine()
+                                logger.info("LicensePlateEngine reloaded successfully")
+                            except Exception as reload_err:
+                                logger.error(f"Failed to reload engine: {reload_err}")
+                            continue
 
                         task_id = task.task_id
                         image_data = task.image_data
