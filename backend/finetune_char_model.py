@@ -221,10 +221,16 @@ def remap_labels(ds_dir: str, ds_folder: str, prefix: str, out_dir: str) -> tupl
 
     # Build remap: source class index → master class index
     remap: dict[int, int] = {}
+    unmapped_names: list[str] = []
     for old_id, name in enumerate(src_names):
         canonical = specific.get(name, GLOBAL_ALIASES.get(name, name))
         if canonical in MASTER_INDEX:
             remap[old_id] = MASTER_INDEX[canonical]
+        else:
+            unmapped_names.append(name)
+
+    if unmapped_names:
+        emit({"type": "info", "message": f"[datasets] {ds_folder} — unmapped classes (will be skipped): {unmapped_names}"})
 
     copied = 0
     skipped = 0
@@ -435,7 +441,37 @@ def _run(args, tmp_root, YOLO, torch):
     # which is unsafe. Load data in the main process (workers=0) when frozen.
     train_workers = 0 if getattr(sys, "frozen", False) else 2
 
+    def _patch_directml_unique():
+        """Patch torch.unique so return_counts=True works on DirectML.
+        DirectML doesn't implement the unique+counts kernel, so we offload
+        that specific call to CPU and copy the result back to the original device."""
+        _orig = torch.unique
+
+        def _safe_unique(input, sorted=True, return_inverse=False,
+                         return_counts=False, dim=None):
+            dev_str = str(input.device)
+            if return_counts and dev_str.startswith("privateuseone"):
+                result = _orig(input.cpu(), sorted=sorted,
+                               return_inverse=return_inverse,
+                               return_counts=True, dim=dim)
+                return tuple(t.to(input.device) for t in result)
+            return _orig(input, sorted=sorted, return_inverse=return_inverse,
+                         return_counts=return_counts, dim=dim)
+
+        torch.unique = _safe_unique
+        return _orig
+
     def run_train(dev):
+        is_cpu = (dev == "cpu")
+        is_directml = str(dev).startswith("privateuseone") or (
+            hasattr(dev, "type") and str(getattr(dev, "type", "")).startswith("privateuseone")
+        )
+
+        orig_unique = None
+        if is_directml:
+            emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
+            orig_unique = _patch_directml_unique()
+
         # AMP (mixed precision) is CUDA-only in ultralytics. Its startup AMP check
         # calls torch.cuda and crashes on DirectML/CPU ("Torch not compiled with
         # CUDA enabled"), so only enable it on a real CUDA GPU.
@@ -444,14 +480,21 @@ def _run(args, tmp_root, YOLO, torch):
             and isinstance(dev, str)
             and dev not in ("cpu", "mps")
         )
+
+        # On CPU: smaller imgsz (plate chars don't need 640px) and cache images
+        # in RAM so epochs 2+ skip disk I/O entirely. Both give big speedups.
+        train_imgsz = 320 if is_cpu else args.imgsz
+        train_batch = 16  if is_cpu else args.batch
+        train_cache = "ram" if is_cpu else False
+
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
         try:
             model.train(
                 data=data_yaml,
                 epochs=total_epochs,
-                imgsz=args.imgsz,
-                batch=args.batch,
+                imgsz=train_imgsz,
+                batch=train_batch,
                 device=dev,
                 project=train_project,
                 name=train_name,
@@ -460,7 +503,7 @@ def _run(args, tmp_root, YOLO, torch):
                 save=True,
                 verbose=False,
                 workers=train_workers,
-                cache=False,
+                cache=train_cache,
                 plots=False,
                 amp=use_amp,
             )
@@ -475,6 +518,8 @@ def _run(args, tmp_root, YOLO, torch):
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if orig_unique is not None:
+                torch.unique = orig_unique
 
     try:
         run_train(device)
