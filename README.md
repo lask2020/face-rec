@@ -1,6 +1,8 @@
-# Face Recognition CCTV System — Distributed Architecture
+# Face Recognition + License Plate CCTV System — Distributed Architecture
 
-ระบบวิเคราะห์และจดจำใบหน้าจากกล้อง CCTV แบบกระจายศูนย์ (Distributed Microservices) รองรับกล้องหลายตัวพร้อมกันแบบ Real-time โดยใช้ Redis Stream เป็นตัวกลางส่งเฟรม, Python AI Worker ประมวลผล InsightFace ผ่าน gRPC Bidirectional Stream, และ React Dashboard สำหรับดูสดและบริหารจัดการระบบ
+ระบบวิเคราะห์จากกล้อง CCTV แบบกระจายศูนย์ (Distributed Microservices) รองรับทั้ง **การจดจำใบหน้า (Face Recognition)** และ **การอ่านป้ายทะเบียนรถไทย (Thai License Plate OCR)** พร้อมกันหลายกล้องแบบ Real-time โดยใช้ Redis Stream เป็นตัวกลางส่งเฟรม, Python AI Worker ประมวลผล InsightFace + YOLO ผ่าน gRPC Bidirectional Stream, และ React Dashboard สำหรับดูสด บริหารจัดการ และ **เทรนโมเดล OCR ซ้ำ (Active-Learning / Fine-tuning)**
+
+แต่ละกล้องตั้ง `detect_mode` ได้: `face` | `plate` | `both`
 
 ---
 
@@ -118,6 +120,65 @@ Python AI Worker(s) [Stateless Fleet]
 | **Detection Logs** | ประวัติการตรวจจับ — Snapshot, Face Crop, Restored Face (CodeFormer), เปรียบเทียบ Side-by-Side |
 | **AI Workers** | ดูสถานะ Worker ที่เชื่อมต่อ, Avg process time, Pause/Resume |
 | **Signage Dashboard** | หน้าจอแสดงผลแยกสำหรับติดจอสาธารณะ (Real-time alert pop-up) |
+| **Training Review** 🎓 | รีวิว/แก้ไขป้ายทะเบียนความมั่นใจต่ำ → approve/reject/correct → สั่งเทรนโมเดลซ้ำ |
+
+---
+
+## License Plate Pipeline (Thai LPR)
+
+ตรวจจับและอ่านป้ายทะเบียนรถไทยแบบ 2 stage บน AI Worker เดียวกัน (ตั้ง `detect_mode = plate | both`)
+
+```
+Stage 1: thai_plate_yolo11n  → ตรวจกรอบป้ายทะเบียน (bbox)
+Stage 2: thai_char_yolo26s   → ตรวจตัวอักษร/ตัวเลข/จังหวัด ในป้ายที่ deskew แล้ว
+   │ ONNX Runtime (fallback .pt ด้วย ultralytics), CLAHE grayscale preprocess
+   ▼
+PlateTrack — สะสมทุกเฟรมของป้ายเดียวกัน (IoU ≥ 0.4 / center-distance)
+   │ flush เมื่อ timeout 6s หรือ max 12s
+   ├─ majority-vote จำนวนตัวอักษร, per-slot best confidence, province majority
+   └─ Fuzzy cooldown (Levenshtein ≤ 2) กันบันทึกซ้ำจาก OCR variant
+```
+
+**Active-Learning**: เฟรมที่ `confidence < TRAINING_CAPTURE_CONF_MAX` (0.65) จะถูกเก็บเป็น
+`PlateTrainingSample` ลง S3 + DB อัตโนมัติ เพื่อนำไปรีวิวและเทรนซ้ำในหน้า Training Review
+
+---
+
+## Fine-tuning Pipeline (เทรนโมเดล OCR ซ้ำ — รันบน AI Worker ที่มี GPU)
+
+**หลักการ:** Go Control Plane ไม่รัน Python/เทรนเอง แต่ทำหน้าที่ export ข้อมูล + สั่งงาน
+ส่วน **AI Worker เป็นผู้เทรน** (in-process) แล้ว upload โมเดลกลับมา
+
+```
+Frontend → POST /api/training/plates/finetune
+  Go Control Plane:
+    1. export approved samples → YOLO dataset (train/valid) + data.yaml
+    2. zip → upload S3 (finetune_dataset_<ts>.zip)
+    3. สั่ง AI Worker ผ่าน gRPC (start_finetune + dataset key + epochs)
+       │
+       ▼
+  AI Worker (มี GPU):
+    1. download dataset zip จาก control plane
+    2. rewrite data.yaml ให้ชี้ path จริงบนเครื่อง worker
+    3. merge กับ Roboflow datasets (ถ้ามีใน data/datasets/) → เทรน YOLO in-process
+    4. upload best .pt/.onnx กลับ → PUT /api/models/upload/<version>/...
+    5. stream progress (epoch/loss) กลับ control plane ทุก epoch
+       │
+       ▼
+  Go Control Plane (เมื่อ "done"):
+    - เขียน meta.json + activate version (copy → active model dir)
+    - push โมเดลขึ้น S3 → broadcast reload ให้ทุก worker โหลดโมเดลใหม่
+```
+
+**Model versioning**: แต่ละครั้งที่เทรนเสร็จเก็บเป็น version (`data/models/versions/<ts>/`)
+ดู/rollback/deploy ได้จากหน้า Training Review
+
+**Roboflow datasets (optional, เพิ่ม accuracy)**: วางบนเครื่อง worker ที่ `data/datasets/`
+(`Thai-License-Plate-Character-Recognition-10`, `Thai-LNPR-3`, `LRU-License-Plate-1`,
+`license-plate-charecter-5`) — ทุกชุดถูก remap เข้า 129 MASTER_CLASSES ก่อน merge
+ถ้าไม่มีจะเทรนด้วย CCTV data อย่างเดียว
+
+> **DirectML/Windows**: build worker ด้วย `build_win.bat directml` เพื่อเทรนบน AMD/Intel GPU
 
 ---
 
@@ -129,6 +190,8 @@ Python AI Worker(s) [Stateless Fleet]
 | Ingestion Worker | Go 1.20+ |
 | AI Worker | Python 3.10+, InsightFace (buffalo_l), ONNX Runtime, OpenCV, gRPC |
 | Face Restoration | CodeFormer (ONNX) — optional |
+| License Plate OCR | YOLO (thai_plate_yolo11n + thai_char_yolo26s), ONNX Runtime / ultralytics |
+| OCR Fine-tuning | ultralytics YOLO train (in-process บน AI Worker, GPU) |
 | Vector Database | Qdrant (512-dim cosine similarity search) |
 | Relational Database | PostgreSQL 15 (Persons, Cameras, Detection Logs) |
 | Object Storage | RustFS (S3-compatible — Snapshots, Face Crops, Restored Faces) |
@@ -203,11 +266,15 @@ face-rec/
 │   ├── app/
 │   │   ├── face_engine.py          # InsightFace wrapper, FaceResult, quality scoring
 │   │   ├── face_restorer.py        # CodeFormer ONNX face restoration (optional)
-│   │   └── gpu_lock.py             # Global inference lock for GPU thread safety
-│   ├── ai_worker_grpc.py           # gRPC client, FaceTrack, quality buffer, cooldown
+│   │   ├── gpu_lock.py             # Global inference lock for GPU thread safety
+│   │   └── license_plate/          # Thai LPR engine (2-stage YOLO), validate, deskew
+│   ├── ai_worker_grpc.py           # gRPC client, FaceTrack + PlateTrack, finetune runner
 │   ├── ai_worker_gui.py            # Windows GUI wrapper (PyQt6)
+│   ├── finetune_char_model.py      # YOLO OCR fine-tune (in-process, label remap → MASTER_CLASSES)
 │   ├── data/
-│   │   └── codeformer.onnx         # CodeFormer model (optional)
+│   │   ├── codeformer.onnx         # CodeFormer model (optional)
+│   │   ├── models/                 # plate/char YOLO models + versions/ (trained)
+│   │   └── datasets/               # (optional) Roboflow datasets for fine-tune
 │   ├── facerec_pb2.py              # Generated protobuf (Python)
 │   ├── facerec_pb2_grpc.py         # Generated gRPC stubs (Python)
 │   ├── requirements.txt
@@ -216,8 +283,10 @@ face-rec/
 │   └── Dockerfile
 ├── go-control-plane/               # Go API & Controller
 │   ├── main.go                     # Entry point, Fiber router, WebSocket hub
-│   ├── grpc_server.go              # gRPC server, frame dispatcher, sticky routing
+│   ├── grpc_server.go              # gRPC server, frame dispatcher, sticky routing, finetune progress
 │   ├── handlers.go                 # REST handlers (Cameras, Persons, Detections, Workers)
+│   ├── training_handlers.go        # Training review, dataset export, finetune dispatch, versions
+│   ├── model_s3_handlers.go        # Model manifest/download/upload, push to S3
 │   ├── db.go                       # GORM models (Camera, Person, FaceVector, DetectionLog)
 │   ├── qdrant.go                   # Qdrant vector upsert/search
 │   ├── s3.go                       # RustFS/S3 upload helper
@@ -256,7 +325,12 @@ face-rec/
 | `FACE_SHARPNESS_THRESHOLD` | `50.0` | Laplacian variance threshold สำหรับ tracking |
 | `MIN_TRACK_SHARPNESS` | `30.0` | Sharpness ขั้นต่ำก่อน flush track |
 | `AI_WORKER_CONCURRENCY` | `4` | จำนวน thread สำหรับประมวลผลเฟรมพร้อมกัน |
-| `FACE_DATA_ROOT` | (auto) | โฟลเดอร์ InsightFace models |
+| `FACE_DATA_ROOT` | (auto) | โฟลเดอร์ InsightFace + plate models (`<root>/models`) |
+| `PLATE_FUZZY_DIST` | `2` | Levenshtein distance สูงสุดสำหรับกันบันทึกป้ายซ้ำ |
+| `PLATE_TRACK_TIMEOUT` | `6.0` | วินาทีก่อน flush PlateTrack ที่ไม่เห็นป้าย |
+| `PLATE_TRACK_MAX_DURATION` | `12.0` | วินาทีสูงสุดที่สะสมเฟรมของป้ายเดียว |
+| `TRAINING_CAPTURE_CONF_MAX` | `0.65` | ป้ายที่ confidence ต่ำกว่านี้ → เก็บเข้า training dataset |
+| `ROBOFLOW_DATASET_BASE` | `<root>/datasets` | โฟลเดอร์ Roboflow datasets สำหรับ fine-tune |
 
 **ค่าคงที่ใน `ai_worker_grpc.py`:**
 - `TRACK_TIMEOUT = 3.0s` — หากไม่เห็นใบหน้าเกิน 3 วินาที → flush
@@ -386,13 +460,21 @@ message FrameTask {
   string task_id      = 1;  // "{camera_id}_{ts}_{uuid}" หรือ uuid สำหรับ registration
   bytes  image_data   = 2;  // JPEG bytes (สูงสุด 20MB)
   bool   is_registration = 3;
+  string detect_mode  = 4;  // "face" | "plate" | "both"
+  bool   reload_models = 5; // สั่ง worker โหลดโมเดลใหม่จาก S3
+  bool   start_finetune = 6; // สั่ง worker เริ่มเทรน OCR
+  string finetune_dataset_s3_key = 7;
+  int32  finetune_epochs = 8;
 }
 
 message InferenceResult {
   string task_id         = 1;
   repeated Detection detections = 2;
   string error_message   = 3;
-  double process_time_ms = 4;  // ส่งทุก 2s เป็น metrics ("metrics" task_id)
+  float  process_time_ms = 4;  // ส่งทุก 2s เป็น metrics ("metrics" task_id)
+  repeated PlateDetection plate_detections = 5;
+  repeated PlateTrainingFrame plate_training_frames = 6;  // เฟรม conf ต่ำ → active-learning
+  FinetuneProgress finetune_progress = 7;                 // epoch/loss/done/error
 }
 
 message Detection {
@@ -450,3 +532,11 @@ PostgreSQL Log + S3 Snapshot/Crop + WebSocket Broadcast
 | WS | `/ws` | WebSocket real-time detection events |
 | GET | `/api/static/snapshots/:file` | Proxy รูปจาก S3 |
 | GET | `/api/static/faces/:file` | Proxy รูปใบหน้าจาก S3 |
+| GET | `/api/plate-detections` | ประวัติการอ่านป้ายทะเบียน |
+| GET | `/api/training/plates` | รายการ training samples (sort: conf ASC) |
+| PUT | `/api/training/plates/:id` | approve/reject/แก้ไขข้อความ + char_labels |
+| GET | `/api/training/plates/export` | ดาวน์โหลด YOLO dataset (ZIP) |
+| POST | `/api/training/plates/finetune` | สั่งเทรนโมเดล OCR ซ้ำ (dispatch → AI Worker) |
+| GET | `/api/training/plates/finetune/status` | สถานะ + log ของ job การเทรน |
+| GET | `/api/training/models/versions` | รายการ version โมเดลที่เทรน (+ active) |
+| POST | `/api/training/models/versions/:v/deploy` | activate version ที่เลือก |

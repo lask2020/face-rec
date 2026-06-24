@@ -62,11 +62,17 @@ class WorkerThread(QThread):
             for key, value in self.plate_settings.items():
                 env[key] = str(value)
 
+            # Force UTF-8 decoding of the worker's stdout. On Windows, text=True
+            # defaults to the locale codec (cp1252/charmap), which crashes on
+            # ultralytics' progress bars / box-drawing chars / emoji (UTF-8 multibyte).
+            # errors="replace" guarantees readline() never raises on odd bytes.
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 env=env,
                 bufsize=1
             )

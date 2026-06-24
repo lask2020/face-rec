@@ -695,7 +695,7 @@ def _rewrite_dataset_yaml(yaml_path: str, send_queue) -> str:
 
     root = os.path.dirname(os.path.abspath(yaml_path))
     try:
-        with open(yaml_path) as f:
+        with open(yaml_path, encoding="utf-8") as f:
             cfg = _yaml.safe_load(f) or {}
 
         def resolve_split(*candidates):
@@ -717,7 +717,7 @@ def _rewrite_dataset_yaml(yaml_path: str, send_queue) -> str:
             cfg["val"] = os.path.relpath(val_dir, root)
             cfg.pop("valid", None)
 
-        with open(yaml_path, "w") as f:
+        with open(yaml_path, "w", encoding="utf-8") as f:
             _yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True)
 
         _send_finetune_progress(send_queue, type="info",

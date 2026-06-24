@@ -184,7 +184,7 @@ def remap_labels(ds_dir: str, ds_folder: str, prefix: str, out_dir: str) -> tupl
     if not os.path.exists(yaml_path):
         return 0, 0
 
-    with open(yaml_path) as f:
+    with open(yaml_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     src_names = cfg.get("names", [])
 
@@ -266,7 +266,7 @@ def merge_roboflow_datasets(base_dir: str, out_dir: str) -> str | None:
         return None
 
     yaml_path = os.path.join(out_dir, "data.yaml")
-    with open(yaml_path, "w") as f:
+    with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump({
             "nc": len(MASTER_CLASSES),
             "names": MASTER_CLASSES,
@@ -281,9 +281,9 @@ def build_combined_yaml(cctv_yaml: str, ext_yaml: str, out_dir: str) -> str:
     Combine CCTV data.yaml + external data.yaml into a single multi-path yaml.
     Both must use MASTER_CLASSES (same nc/names).
     """
-    with open(cctv_yaml) as f:
+    with open(cctv_yaml, encoding="utf-8") as f:
         cctv = yaml.safe_load(f)
-    with open(ext_yaml) as f:
+    with open(ext_yaml, encoding="utf-8") as f:
         ext = yaml.safe_load(f)
 
     def as_list(v, base):
@@ -303,7 +303,7 @@ def build_combined_yaml(cctv_yaml: str, ext_yaml: str, out_dir: str) -> str:
                  as_list(ext.get("val",  ext.get("valid")),  ext_dir),
     }
     out = os.path.join(out_dir, "combined_data.yaml")
-    with open(out, "w") as f:
+    with open(out, "w", encoding="utf-8") as f:
         yaml.dump(combined, f, default_flow_style=False, allow_unicode=True)
     return out
 
@@ -374,7 +374,7 @@ def _run(args, tmp_root, YOLO, torch):
             try:
                 import torch_directml
                 device = torch_directml.device()
-                emit({"type": "info", "message": "Using DirectML (AMD/Intel GPU)"})
+                emit({"type": "info", "message": "Trying DirectML (AMD/Intel GPU) for training"})
             except ImportError:
                 device = "cpu"
 
@@ -403,7 +403,15 @@ def _run(args, tmp_root, YOLO, torch):
     # which is unsafe. Load data in the main process (workers=0) when frozen.
     train_workers = 0 if getattr(sys, "frozen", False) else 2
 
-    try:
+    def run_train(dev):
+        # AMP (mixed precision) is CUDA-only in ultralytics. Its startup AMP check
+        # calls torch.cuda and crashes on DirectML/CPU ("Torch not compiled with
+        # CUDA enabled"), so only enable it on a real CUDA GPU.
+        use_amp = (
+            torch.cuda.is_available()
+            and isinstance(dev, str)
+            and dev not in ("cpu", "mps")
+        )
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
         model.train(
@@ -411,7 +419,7 @@ def _run(args, tmp_root, YOLO, torch):
             epochs=total_epochs,
             imgsz=args.imgsz,
             batch=args.batch,
-            device=device,
+            device=dev,
             project=train_project,
             name=train_name,
             exist_ok=True,
@@ -421,9 +429,22 @@ def _run(args, tmp_root, YOLO, torch):
             workers=train_workers,
             cache=False,
             plots=False,
+            amp=use_amp,
         )
+
+    try:
+        run_train(device)
     except Exception as e:
-        emit({"type": "error", "message": str(e)}); sys.exit(1)
+        # DirectML / non-CUDA GPU training under ultralytics is unreliable.
+        # Fall back to CPU so the job still completes (slower but works).
+        if device != "cpu":
+            emit({"type": "info", "message": f"GPU training failed ({e}) — retrying on CPU"})
+            try:
+                run_train("cpu")
+            except Exception as e2:
+                emit({"type": "error", "message": f"CPU training also failed: {e2}"}); return
+        else:
+            emit({"type": "error", "message": str(e)}); return
 
     # ── 5. Save best.pt ───────────────────────────────────────────────────────
     if not os.path.exists(best_pt_path):
@@ -453,7 +474,7 @@ def _run(args, tmp_root, YOLO, torch):
     shutil.copy2(args.output, os.path.join(versions_dir, os.path.basename(args.output)))
     if os.path.exists(onnx_output):
         shutil.copy2(onnx_output, os.path.join(versions_dir, os.path.basename(onnx_output)))
-    with open(os.path.join(versions_dir, "meta.json"), "w") as f:
+    with open(os.path.join(versions_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump({
             "version":    version_ts,
             "trained_at": datetime.datetime.utcnow().isoformat() + "Z",
