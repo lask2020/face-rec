@@ -701,11 +701,11 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
     """Download the CCTV dataset zip from S3, merge with Roboflow datasets, run fine-tuning."""
     import zipfile
     import tempfile
-    import subprocess
+    import shutil
 
     _send_finetune_progress(send_queue, type="info", message="Worker received finetune task — preparing dataset")
 
-    # Download dataset zip from S3 (via control plane HTTP, same as model sync)
+    # Download dataset zip from S3 (via control plane HTTP)
     http_url = os.environ.get("CONTROL_PLANE_HTTP_URL", "").rstrip("/")
     if not http_url:
         grpc_url = os.environ.get("CONTROL_PLANE_URL", "")
@@ -729,7 +729,6 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(extract_dir)
             os.remove(zip_path)
-            # Find data.yaml inside extracted dir
             for root, _, files in os.walk(extract_dir):
                 for fn in files:
                     if fn == "data.yaml":
@@ -737,79 +736,58 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
                         break
                 if cctv_yaml:
                     break
-            _send_finetune_progress(send_queue, type="info", message=f"Dataset extracted — found data.yaml: {cctv_yaml}")
+            _send_finetune_progress(send_queue, type="info", message=f"Dataset extracted — data.yaml: {cctv_yaml}")
         except Exception as e:
-            _send_finetune_progress(send_queue, type="info", message=f"Warning: could not download CCTV dataset: {e}. Training with Roboflow datasets only.")
+            _send_finetune_progress(send_queue, type="info",
+                                    message=f"Warning: could not download CCTV dataset: {e}. Training with Roboflow datasets only.")
 
-    # Locate finetune script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    script = os.path.join(script_dir, "finetune_char_model.py")
-    if not os.path.exists(script):
-        _send_finetune_progress(send_queue, type="error", message=f"finetune_char_model.py not found at {script}")
-        return
-
-    # Locate models dir (same logic as engine)
+    # Locate models dir
     from app.license_plate.engine import _resolve_models_dir
     models_dir = _resolve_models_dir()
     base_model = os.path.join(models_dir, "thai_char_yolo26s.pt")
     output_model = base_model
 
-    env = os.environ.copy()
-    # datasets folder sits next to models folder
-    roboflow_base = env.get("ROBOFLOW_DATASET_BASE", "")
+    roboflow_base = os.environ.get("ROBOFLOW_DATASET_BASE", "")
     if not roboflow_base:
         roboflow_base = os.path.join(os.path.dirname(models_dir), "datasets")
-        env["ROBOFLOW_DATASET_BASE"] = roboflow_base
     os.makedirs(roboflow_base, exist_ok=True)
 
-    cmd = [sys.executable, script,
-           "--base-model", base_model,
-           "--output", output_model,
-           "--epochs", str(epochs)]
-    if cctv_yaml:
-        cmd += ["--data", cctv_yaml]
-
-    _send_finetune_progress(send_queue, type="info", message=f"Starting training: {' '.join(cmd)}")
+    def _on_progress(msg: dict):
+        msg_type = msg.get("type", "info")
+        if msg_type == "epoch":
+            _send_finetune_progress(send_queue,
+                type="epoch",
+                epoch=int(msg.get("epoch", 0)),
+                epochs=int(msg.get("epochs", epochs)),
+                box_loss=float(msg.get("box_loss", 0)),
+                cls_loss=float(msg.get("cls_loss", 0)))
+        elif msg_type == "done":
+            _send_finetune_progress(send_queue, type="done",
+                                    version=msg.get("version", ""),
+                                    message="Training complete")
+        elif msg_type == "error":
+            _send_finetune_progress(send_queue, type="error",
+                                    message=msg.get("message", str(msg)))
+        else:
+            _send_finetune_progress(send_queue, type="info",
+                                    message=msg.get("message", str(msg)))
 
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, env=env)
-        import json as _json
-        for line in proc.stdout:
-            line = line.rstrip()
-            if not line:
-                continue
-            try:
-                msg = _json.loads(line)
-                msg_type = msg.get("type", "info")
-                if msg_type == "epoch":
-                    _send_finetune_progress(send_queue,
-                        type="epoch",
-                        epoch=int(msg.get("epoch", 0)),
-                        epochs=int(msg.get("epochs", epochs)),
-                        box_loss=float(msg.get("box_loss", 0)),
-                        cls_loss=float(msg.get("cls_loss", 0)))
-                elif msg_type == "done":
-                    version = msg.get("version", "")
-                    _send_finetune_progress(send_queue, type="done", version=version,
-                                            message="Training complete")
-                elif msg_type == "error":
-                    _send_finetune_progress(send_queue, type="error",
-                                            message=msg.get("message", line))
-                else:
-                    _send_finetune_progress(send_queue, type="info", message=line)
-            except Exception:
-                _send_finetune_progress(send_queue, type="info", message=line)
-
-        proc.wait()
-        if proc.returncode != 0:
-            _send_finetune_progress(send_queue, type="error",
-                                    message=f"Training process exited with code {proc.returncode}")
+        import finetune_char_model as _ftm
+        _send_finetune_progress(send_queue, type="info",
+                                message=f"Starting training (inline) — base={base_model} epochs={epochs}")
+        _ftm.run_finetune_inline(
+            base_model=base_model,
+            output_model=output_model,
+            epochs=epochs,
+            cctv_yaml=cctv_yaml,
+            roboflow_base=roboflow_base,
+            progress_cb=_on_progress,
+        )
     except Exception as e:
         _send_finetune_progress(send_queue, type="error", message=f"Training failed: {e}")
     finally:
         if tmp_dataset_dir:
-            import shutil
             try:
                 shutil.rmtree(tmp_dataset_dir, ignore_errors=True)
             except Exception:

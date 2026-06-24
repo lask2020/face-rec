@@ -148,8 +148,13 @@ FIXED_DATASETS = [
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_progress_callback = None  # set to a callable(dict) when used inline
+
 def emit(obj: dict):
-    print(json.dumps(obj), flush=True)
+    if _progress_callback is not None:
+        _progress_callback(obj)
+    else:
+        print(json.dumps(obj), flush=True)
 
 
 def label_to_bbox(parts: list) -> str | None:
@@ -455,6 +460,63 @@ def _run(args, tmp_root, YOLO, torch):
     emit({"type": "info", "message": f"Version saved → {versions_dir}"})
 
     emit({"type": "done", "model": args.output, "onnx": onnx_output, "version": version_ts})
+
+
+def run_finetune_inline(
+    base_model: str,
+    output_model: str,
+    epochs: int = 30,
+    imgsz: int = 640,
+    batch: int = 8,
+    cctv_yaml: str | None = None,
+    roboflow_base: str | None = None,
+    progress_cb=None,
+):
+    """
+    Call fine-tuning directly in-process (no subprocess).
+    progress_cb(dict) is called for each progress event instead of printing to stdout.
+    Used by the PyInstaller Windows worker.
+    """
+    import types as _types
+
+    global _progress_callback
+    _progress_callback = progress_cb
+
+    if roboflow_base:
+        os.environ.setdefault("ROBOFLOW_DATASET_BASE", roboflow_base)
+
+    try:
+        from ultralytics import YOLO
+        import torch
+    except ImportError as e:
+        emit({"type": "error", "message": f"Import error: {e}"})
+        return
+
+    args = _types.SimpleNamespace(
+        data=cctv_yaml or "",
+        base_model=base_model,
+        output=output_model,
+        epochs=epochs,
+        imgsz=imgsz,
+        batch=batch,
+        samples=0,
+    )
+
+    if args.data and not os.path.exists(args.data):
+        emit({"type": "error", "message": f"data.yaml not found: {args.data}"})
+        return
+    if not os.path.exists(args.base_model):
+        emit({"type": "error", "message": f"Base model not found: {args.base_model}"})
+        return
+
+    tmp_root = tempfile.mkdtemp(prefix="finetune_")
+    try:
+        _run(args, tmp_root, YOLO, torch)
+    except Exception as e:
+        emit({"type": "error", "message": str(e)})
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        _progress_callback = None
 
 
 if __name__ == "__main__":

@@ -120,6 +120,7 @@ pyinstaller --noconfirm --noconsole --onefile ^
     --name="FaceRec_AI_Worker_Windows_%SUFFIX%" ^
     --add-data "app;app" ^
     --add-data "facerec.proto;." ^
+    --hidden-import finetune_char_model ^
     --collect-binaries onnxruntime ^
     ai_worker_gui.py
 
