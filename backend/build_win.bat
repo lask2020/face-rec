@@ -90,6 +90,7 @@ call "%VENV_DIR%\Scripts\activate.bat"
 
 IF "%NEED_INSTALL%"=="1" (
     echo [2/4] Installing build tools...
+    python -m pip install --quiet --upgrade pip
     python -m pip install --quiet pip setuptools wheel pyinstaller
 
     echo [3/4] Installing dependencies...
