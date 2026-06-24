@@ -24,6 +24,7 @@ Prints JSON lines to stdout:
 """
 
 import argparse
+import gc
 import json
 import os
 import shutil
@@ -414,23 +415,35 @@ def _run(args, tmp_root, YOLO, torch):
         )
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
-        model.train(
-            data=data_yaml,
-            epochs=total_epochs,
-            imgsz=args.imgsz,
-            batch=args.batch,
-            device=dev,
-            project=train_project,
-            name=train_name,
-            exist_ok=True,
-            patience=10,
-            save=True,
-            verbose=False,
-            workers=train_workers,
-            cache=False,
-            plots=False,
-            amp=use_amp,
-        )
+        try:
+            model.train(
+                data=data_yaml,
+                epochs=total_epochs,
+                imgsz=args.imgsz,
+                batch=args.batch,
+                device=dev,
+                project=train_project,
+                name=train_name,
+                exist_ok=True,
+                patience=10,
+                save=True,
+                verbose=False,
+                workers=train_workers,
+                cache=False,
+                plots=False,
+                amp=use_amp,
+            )
+        finally:
+            # Release GPU memory before returning (critical for DirectML — no empty_cache()).
+            # ultralytics may hold trainer references internally; delete model explicitly.
+            try:
+                del model.trainer
+            except Exception:
+                pass
+            del model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     try:
         run_train(device)
