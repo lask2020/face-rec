@@ -228,6 +228,13 @@ func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_
 }
 
 func registerWorker(w *AIWorkerSession) {
+	// Restore persisted pause state so reconnecting workers remember their setting.
+	if getSettingValue("worker_paused_"+w.id) == "true" {
+		w.mu.Lock()
+		w.isPaused = true
+		w.mu.Unlock()
+	}
+
 	activeWorkersMu.Lock()
 	activeWorkers = append(activeWorkers, w)
 	activeWorkersMu.Unlock()
@@ -458,6 +465,13 @@ func ToggleWorkerPause(workerID string) (bool, error) {
 	newPausedState := targetWorker.isPaused
 	targetWorker.mu.Unlock()
 
+	// Persist pause state so it survives worker reconnects.
+	val := "false"
+	if newPausedState {
+		val = "true"
+	}
+	putSettingValue("worker_paused_"+workerID, val)
+
 	// If paused, clear its camera assignments so they can be re-dispatched
 	if newPausedState {
 		cameraToWorkerMu.Lock()
@@ -602,16 +616,14 @@ func handleInferenceResult(result *facerec.InferenceResult) {
 		return
 	}
 
-	ctx := context.Background()
-
-	// Handle plate detections (independent of face detections)
+	// Both plate handling and training-frame saves involve blocking S3 uploads.
+	// Run them in goroutines so the gRPC recv loop is never stalled.
 	if len(result.PlateDetections) > 0 {
-		handlePlateDetections(ctx, result, task)
+		go handlePlateDetections(context.Background(), result, task)
 	}
 
-	// Save low-confidence frames for training review
 	if len(result.PlateTrainingFrames) > 0 {
-		go saveTrainingFrames(ctx, result.PlateTrainingFrames, task)
+		go saveTrainingFrames(context.Background(), result.PlateTrainingFrames, task)
 	}
 
 	// If no faces detected, we skip face logging and S3 uploads

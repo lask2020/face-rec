@@ -23,6 +23,8 @@ Prints JSON lines to stdout:
     {"type": "error", "message": "..."}
 """
 
+from __future__ import annotations
+
 import argparse
 import gc
 import json
@@ -481,11 +483,12 @@ def _run(args, tmp_root, YOLO, torch):
             and dev not in ("cpu", "mps")
         )
 
-        # On CPU: smaller imgsz (plate chars don't need 640px) and cache images
-        # in RAM so epochs 2+ skip disk I/O entirely. Both give big speedups.
-        train_imgsz = 320 if is_cpu else args.imgsz
-        train_batch = 16  if is_cpu else args.batch
-        train_cache = "ram" if is_cpu else False
+        # Plate characters are small — 320px is sufficient and ~4x faster than 640.
+        # cache="ram" eliminates disk I/O from epoch 2 onward.
+        is_small_gpu = is_cpu or (dev == "mps")
+        train_imgsz = 320 if is_small_gpu else args.imgsz
+        train_batch = 16  if is_small_gpu else args.batch
+        train_cache = "ram" if is_small_gpu else False
 
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)

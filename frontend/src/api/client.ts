@@ -509,6 +509,7 @@ export interface FinetuneStatus {
 
 export interface Worker {
   id: string;
+  name: string;
   connected_at: string;
   uptime: string;
   avg_process_ms: number;
@@ -518,6 +519,12 @@ export interface Worker {
 
 export const workersApi = {
   list: (): Promise<{ workers: Worker[] }> => request('/workers'),
+  rename: (id: string, name: string): Promise<{ id: string; name: string }> =>
+    request(`/workers/${id}/name`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
 };
 
 export const settingsApi = {

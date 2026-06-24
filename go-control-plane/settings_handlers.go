@@ -33,3 +33,7 @@ func getSettingValue(key string) string {
 	}
 	return s.Value
 }
+
+func putSettingValue(key, value string) {
+	DB.Save(&AppSetting{Key: key, Value: value})
+}

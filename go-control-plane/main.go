@@ -88,6 +88,7 @@ func main() {
 	// Workers
 	api.Get("/workers", GetWorkers)
 	api.Post("/workers/:id/toggle-pause", ToggleWorkerPauseHandler)
+	api.Put("/workers/:id/name", RenameWorkerHandler)
 
 	// Surveillance Station
 	api.Post("/surveillance-station/test", TestSSConnection)

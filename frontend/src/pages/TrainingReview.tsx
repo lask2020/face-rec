@@ -400,6 +400,8 @@ export default function TrainingReview() {
   const [savingKey, setSavingKey] = useState(false);
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [selectedWorker, setSelectedWorker] = useState<string>('');
+  const [renamingWorker, setRenamingWorker] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const logBoxRef = useRef<HTMLDivElement>(null);
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
@@ -716,24 +718,64 @@ export default function TrainingReview() {
           >
             Export ZIP
           </a>
-          <select
-            value={selectedWorker}
-            onChange={(e) => setSelectedWorker(e.target.value)}
-            disabled={finetune?.status === 'running'}
-            style={{
-              padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)',
-              background: 'var(--bg-input)', color: 'var(--text)', fontSize: 12,
-              maxWidth: 180,
-            }}
-          >
-            <option value="">All workers ({workers.length})</option>
-            {workers.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.id.slice(0, 8)} · {w.avg_process_ms.toFixed(0)}ms
-                {w.cameras.length > 0 ? ` · ${w.cameras.map(c => c.name).join(', ')}` : ''}
-              </option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+            {/* Worker selector rows */}
+            {[{ id: '', name: '', uptime: '', avg_process_ms: 0, is_paused: false, cameras: [], connected_at: '' } as Worker, ...workers].map((w, idx) => {
+              const isAll = w.id === '';
+              const label = isAll
+                ? `All workers (${workers.length})`
+                : (w.name || w.id.slice(0, 8));
+              const isSelected = selectedWorker === w.id;
+              const isRenaming = renamingWorker === w.id && !isAll;
+              return (
+                <div key={w.id || '__all'} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button
+                    onClick={() => !isAll || workers.length !== 1 ? setSelectedWorker(w.id) : null}
+                    disabled={finetune?.status === 'running'}
+                    style={{
+                      flex: 1, textAlign: 'left', padding: '4px 8px', borderRadius: 6, fontSize: 12,
+                      border: isSelected ? '1px solid var(--accent)' : '1px solid var(--border)',
+                      background: isSelected ? 'color-mix(in srgb, var(--accent) 15%, var(--bg))' : 'var(--bg-input)',
+                      color: 'var(--text)', cursor: 'pointer',
+                    }}
+                  >
+                    {isRenaming ? (
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={async (e) => {
+                          if (e.key === 'Enter') {
+                            await workersApi.rename(w.id, renameValue);
+                            setWorkers(ws => ws.map(x => x.id === w.id ? { ...x, name: renameValue } : x));
+                            setRenamingWorker(null);
+                          } else if (e.key === 'Escape') {
+                            setRenamingWorker(null);
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ background: 'transparent', border: 'none', outline: 'none', color: 'var(--text)', width: '100%', fontSize: 12 }}
+                      />
+                    ) : (
+                      <span>
+                        {label}
+                        {!isAll && <span style={{ color: 'var(--text-muted)', marginLeft: 4, fontSize: 11 }}>
+                          · {w.avg_process_ms.toFixed(0)}ms{w.is_paused ? ' ⏸' : ''}
+                        </span>}
+                      </span>
+                    )}
+                  </button>
+                  {!isAll && !isRenaming && (
+                    <button
+                      title="Rename"
+                      onClick={() => { setRenamingWorker(w.id); setRenameValue(w.name || ''); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 12, padding: '2px 4px' }}
+                    >✏️</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <input
               type="password"

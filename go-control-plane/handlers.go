@@ -697,6 +697,7 @@ func GetWorkers(c *fiber.Ctx) error {
 
 	type WorkerInfo struct {
 		ID           string             `json:"id"`
+		Name         string             `json:"name"`
 		ConnectedAt  string             `json:"connected_at"`
 		Uptime       string             `json:"uptime"`
 		Cameras      []WorkerCameraInfo `json:"cameras"`
@@ -727,8 +728,11 @@ func GetWorkers(c *fiber.Ctx) error {
 		isPaused := w.isPaused
 		w.mu.Unlock()
 
+		workerName := getSettingValue("worker_name_" + w.id)
+
 		result = append(result, WorkerInfo{
 			ID:           w.id,
+			Name:         workerName,
 			ConnectedAt:  w.connectedAt.Format(time.RFC3339),
 			Uptime:       uptime,
 			Cameras:      assignedCams,
@@ -741,6 +745,18 @@ func GetWorkers(c *fiber.Ctx) error {
 		"workers": result,
 		"total":   len(result),
 	})
+}
+
+func RenameWorkerHandler(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
+	}
+	putSettingValue("worker_name_"+id, body.Name)
+	return c.JSON(fiber.Map{"id": id, "name": body.Name})
 }
 
 // ToggleWorkerPauseHandler toggles the pause/resume state of an AI worker session.
