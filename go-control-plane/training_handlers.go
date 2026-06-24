@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -605,6 +603,58 @@ func (j *finetuneJobState) snapshot() map[string]interface{} {
 	}
 }
 
+func (j *finetuneJobState) setError(msg string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Status = "error"
+	j.Error = msg
+}
+
+// zipDirectory creates a zip archive of src directory at dst path.
+func zipDirectory(src, dst string) error {
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := zip.NewWriter(f)
+	defer w.Close()
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(src, path)
+		zf, err := w.Create(rel)
+		if err != nil {
+			return err
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		_, err = io.Copy(zf, in)
+		return err
+	})
+}
+
+// BroadcastFinetuneTask sends a start_finetune task to all connected workers.
+// Returns the number of workers that received it.
+func BroadcastFinetuneTask(task *facerec.FrameTask) int {
+	activeWorkersMu.Lock()
+	ws := make([]*AIWorkerSession, len(activeWorkers))
+	copy(ws, activeWorkers)
+	activeWorkersMu.Unlock()
+
+	delivered := 0
+	for _, w := range ws {
+		if w.sendBlocking(task, 10*time.Second) {
+			delivered++
+		}
+	}
+	return delivered
+}
+
 // exportDatasetToDir writes the approved YOLO dataset to a temp directory and
 // returns the path to data.yaml (or an error).
 func exportDatasetToDir(dir string) (string, error) {
@@ -727,142 +777,69 @@ func startFinetune(c *fiber.Ctx) error {
 			}
 		}()
 
-		// Export dataset to temp dir
+		// 1. Export approved CCTV samples to temp dir
 		tmpDir, err := os.MkdirTemp("", "finetune_*")
 		if err != nil {
-			finetuneJob.mu.Lock()
-			finetuneJob.Status = "error"
-			finetuneJob.Error = "failed to create temp dir: " + err.Error()
-			finetuneJob.mu.Unlock()
+			finetuneJob.setError("failed to create temp dir: " + err.Error())
 			return
 		}
 		defer os.RemoveAll(tmpDir)
 
-		finetuneJob.appendLog("Exporting approved samples to temp dir...")
-		dataYaml, err := exportDatasetToDir(tmpDir)
-		if err != nil {
-			finetuneJob.mu.Lock()
-			finetuneJob.Status = "error"
-			finetuneJob.Error = "export failed: " + err.Error()
-			finetuneJob.mu.Unlock()
+		finetuneJob.appendLog("Exporting approved samples...")
+		if _, err := exportDatasetToDir(tmpDir); err != nil {
+			finetuneJob.setError("export failed: " + err.Error())
 			return
 		}
-		finetuneJob.appendLog("Export complete. Starting training...")
+		finetuneJob.appendLog("Export done. Zipping dataset...")
 
-		modelsDir := resolveModelsDir()
-		baseModel := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
-		outputModel := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
-
-		pythonBin := os.Getenv("PYTHON_BIN")
-		if pythonBin == "" {
-			pythonBin = "python3"
-		}
-		scriptPath := os.Getenv("FINETUNE_SCRIPT")
-		if scriptPath == "" {
-			scriptPath = "backend/finetune_char_model.py"
+		// 2. Zip the exported dataset
+		zipPath := tmpDir + ".zip"
+		defer os.Remove(zipPath)
+		if err := zipDirectory(tmpDir, zipPath); err != nil {
+			finetuneJob.setError("zip failed: " + err.Error())
+			return
 		}
 
+		// 3. Upload zip to S3
+		s3Key := fmt.Sprintf("finetune_dataset_%d.zip", time.Now().UnixMilli())
+		finetuneJob.appendLog("Uploading dataset to S3...")
+		f, err := os.Open(zipPath)
+		if err != nil {
+			finetuneJob.setError("open zip: " + err.Error())
+			return
+		}
+		stat, _ := f.Stat()
+		_, err = S3Client.PutObject(context.Background(), SnapshotsBucket, s3Key, f, stat.Size(),
+			minio.PutObjectOptions{ContentType: "application/zip"})
+		f.Close()
+		if err != nil {
+			finetuneJob.setError("S3 upload failed: " + err.Error())
+			return
+		}
+		finetuneJob.appendLog("Dataset uploaded. Sending to AI worker...")
+
+		// 4. Broadcast start_finetune to workers via gRPC
 		epochsStr := os.Getenv("FINETUNE_EPOCHS")
-		if epochsStr == "" {
-			epochsStr = "30"
-		}
-
-		// Count approved samples for metadata
-		var sampleCount int64
-		DB.Model(&PlateTrainingSample{}).Where("status = 'approved'").Count(&sampleCount)
-
-		args := []string{
-			scriptPath,
-			"--data", dataYaml,
-			"--base-model", baseModel,
-			"--output", outputModel,
-			"--epochs", epochsStr,
-			"--samples", strconv.FormatInt(sampleCount, 10),
-		}
-
-		// Dataset folder sits next to the models folder: data/datasets/
-		roboflowBase := os.Getenv("ROBOFLOW_DATASET_BASE")
-		if roboflowBase == "" {
-			roboflowBase = filepath.Join(filepath.Dir(modelsDir), "datasets")
-		}
-		os.MkdirAll(roboflowBase, 0o755)
-		finetuneJob.appendLog("Dataset base: " + roboflowBase)
-
-		cmd := exec.Command(pythonBin, args...)
-		cmd.Stderr = os.Stderr
-		cmd.Env = append(os.Environ(),
-			"ROBOFLOW_DATASET_BASE="+roboflowBase,
-		)
-
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			finetuneJob.mu.Lock()
-			finetuneJob.Status = "error"
-			finetuneJob.Error = "stdout pipe: " + err.Error()
-			finetuneJob.mu.Unlock()
-			return
-		}
-
-		if err := cmd.Start(); err != nil {
-			finetuneJob.mu.Lock()
-			finetuneJob.Status = "error"
-			finetuneJob.Error = "failed to start python: " + err.Error()
-			finetuneJob.mu.Unlock()
-			return
-		}
-
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			finetuneJob.appendLog(line)
-
-			var msg map[string]interface{}
-			if json.Unmarshal([]byte(line), &msg) == nil {
-				msgType, _ := msg["type"].(string)
-				switch msgType {
-				case "epoch":
-					epoch, _ := msg["epoch"].(float64)
-					epochs, _ := msg["epochs"].(float64)
-					finetuneJob.mu.Lock()
-					finetuneJob.Epoch = int(epoch)
-					finetuneJob.Epochs = int(epochs)
-					finetuneJob.mu.Unlock()
-				case "done":
-					version, _ := msg["version"].(string)
-					finetuneJob.mu.Lock()
-					finetuneJob.Status = "done"
-					finetuneJob.mu.Unlock()
-					if version != "" {
-						writeActiveVersion(version)
-						go pushModelsToS3(version)
-					}
-				case "error":
-					errMsg, _ := msg["message"].(string)
-					finetuneJob.mu.Lock()
-					finetuneJob.Status = "error"
-					finetuneJob.Error = errMsg
-					finetuneJob.mu.Unlock()
-				}
+		epochs := int32(30)
+		if epochsStr != "" {
+			if n, err := strconv.Atoi(epochsStr); err == nil {
+				epochs = int32(n)
 			}
 		}
-
-		if err := cmd.Wait(); err != nil {
-			finetuneJob.mu.Lock()
-			if finetuneJob.Status == "running" {
-				finetuneJob.Status = "error"
-				finetuneJob.Error = "process exited: " + err.Error()
-			}
-			finetuneJob.mu.Unlock()
+		task := &facerec.FrameTask{
+			StartFinetune:        true,
+			FinetuneDatasetS3Key: s3Key,
+			FinetuneEpochs:       epochs,
+		}
+		delivered := BroadcastFinetuneTask(task)
+		if delivered == 0 {
+			finetuneJob.setError("no AI workers connected — cannot start training")
+			// Clean up S3
+			S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
 			return
 		}
-
-		finetuneJob.mu.Lock()
-		if finetuneJob.Status == "running" {
-			finetuneJob.Status = "done"
-		}
-		finetuneJob.mu.Unlock()
-
-		log.Println("[Finetune] Job completed")
+		finetuneJob.appendLog(fmt.Sprintf("Training started on %d worker(s)", delivered))
+		// Status stays "running" — worker will send FinetuneProgress back via gRPC
 	}()
 
 	return c.JSON(fiber.Map{"status": "started"})

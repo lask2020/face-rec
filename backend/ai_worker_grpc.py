@@ -684,6 +684,138 @@ def track_flusher(send_queue, stop_event=None):
                 logger.error(f"Error in track_flusher: {e}")
 
 
+def _send_finetune_progress(send_queue, **kwargs):
+    """Helper to send FinetuneProgress back to the control plane via gRPC."""
+    fp = facerec_pb2.FinetuneProgress(**kwargs)
+    result = facerec_pb2.InferenceResult(
+        task_id="finetune",
+        finetune_progress=fp,
+    )
+    try:
+        send_queue.put(result, timeout=10)
+    except Exception:
+        pass
+
+
+def _run_finetune(s3_key: str, epochs: int, send_queue):
+    """Download the CCTV dataset zip from S3, merge with Roboflow datasets, run fine-tuning."""
+    import zipfile
+    import tempfile
+    import subprocess
+
+    _send_finetune_progress(send_queue, type="info", message="Worker received finetune task — preparing dataset")
+
+    # Download dataset zip from S3 (via control plane HTTP, same as model sync)
+    http_url = os.environ.get("CONTROL_PLANE_HTTP_URL", "").rstrip("/")
+    if not http_url:
+        grpc_url = os.environ.get("CONTROL_PLANE_URL", "")
+        if grpc_url:
+            host = grpc_url.split(":")[0]
+            http_url = f"http://{host}:8000"
+
+    cctv_yaml = None
+    tmp_dataset_dir = None
+
+    if s3_key and http_url:
+        import urllib.request
+        try:
+            zip_url = f"{http_url}/api/static/snapshots/{s3_key}"
+            _send_finetune_progress(send_queue, type="info", message=f"Downloading dataset: {zip_url}")
+            tmp_dataset_dir = tempfile.mkdtemp(prefix="finetune_ds_")
+            zip_path = os.path.join(tmp_dataset_dir, "cctv_dataset.zip")
+            urllib.request.urlretrieve(zip_url, zip_path)
+            extract_dir = os.path.join(tmp_dataset_dir, "cctv")
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+            os.remove(zip_path)
+            # Find data.yaml inside extracted dir
+            for root, _, files in os.walk(extract_dir):
+                for fn in files:
+                    if fn == "data.yaml":
+                        cctv_yaml = os.path.join(root, fn)
+                        break
+                if cctv_yaml:
+                    break
+            _send_finetune_progress(send_queue, type="info", message=f"Dataset extracted — found data.yaml: {cctv_yaml}")
+        except Exception as e:
+            _send_finetune_progress(send_queue, type="info", message=f"Warning: could not download CCTV dataset: {e}. Training with Roboflow datasets only.")
+
+    # Locate finetune script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(script_dir, "finetune_char_model.py")
+    if not os.path.exists(script):
+        _send_finetune_progress(send_queue, type="error", message=f"finetune_char_model.py not found at {script}")
+        return
+
+    # Locate models dir (same logic as engine)
+    from app.license_plate.engine import _resolve_models_dir
+    models_dir = _resolve_models_dir()
+    base_model = os.path.join(models_dir, "thai_char_yolo26s.pt")
+    output_model = base_model
+
+    env = os.environ.copy()
+    # datasets folder sits next to models folder
+    roboflow_base = env.get("ROBOFLOW_DATASET_BASE", "")
+    if not roboflow_base:
+        roboflow_base = os.path.join(os.path.dirname(models_dir), "datasets")
+        env["ROBOFLOW_DATASET_BASE"] = roboflow_base
+    os.makedirs(roboflow_base, exist_ok=True)
+
+    cmd = [sys.executable, script,
+           "--base-model", base_model,
+           "--output", output_model,
+           "--epochs", str(epochs)]
+    if cctv_yaml:
+        cmd += ["--data", cctv_yaml]
+
+    _send_finetune_progress(send_queue, type="info", message=f"Starting training: {' '.join(cmd)}")
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, env=env)
+        import json as _json
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            try:
+                msg = _json.loads(line)
+                msg_type = msg.get("type", "info")
+                if msg_type == "epoch":
+                    _send_finetune_progress(send_queue,
+                        type="epoch",
+                        epoch=int(msg.get("epoch", 0)),
+                        epochs=int(msg.get("epochs", epochs)),
+                        box_loss=float(msg.get("box_loss", 0)),
+                        cls_loss=float(msg.get("cls_loss", 0)))
+                elif msg_type == "done":
+                    version = msg.get("version", "")
+                    _send_finetune_progress(send_queue, type="done", version=version,
+                                            message="Training complete")
+                elif msg_type == "error":
+                    _send_finetune_progress(send_queue, type="error",
+                                            message=msg.get("message", line))
+                else:
+                    _send_finetune_progress(send_queue, type="info", message=line)
+            except Exception:
+                _send_finetune_progress(send_queue, type="info", message=line)
+
+        proc.wait()
+        if proc.returncode != 0:
+            _send_finetune_progress(send_queue, type="error",
+                                    message=f"Training process exited with code {proc.returncode}")
+    except Exception as e:
+        _send_finetune_progress(send_queue, type="error", message=f"Training failed: {e}")
+    finally:
+        if tmp_dataset_dir:
+            import shutil
+            try:
+                shutil.rmtree(tmp_dataset_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
 def process_task(task_id, image_data, is_reg, send_queue, detect_mode="face"):
     try:
         start_time = time.time()
@@ -932,6 +1064,14 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                 logger.info("LicensePlateEngine reloaded successfully")
                             except Exception as reload_err:
                                 logger.error(f"Failed to reload engine: {reload_err}")
+                            continue
+
+                        # Fine-tune signal: run training in background thread
+                        if getattr(task, 'start_finetune', False):
+                            s3_key = getattr(task, 'finetune_dataset_s3_key', '')
+                            epochs = getattr(task, 'finetune_epochs', 30) or 30
+                            logger.info(f"Received start_finetune signal — dataset_s3_key={s3_key} epochs={epochs}")
+                            executor.submit(_run_finetune, s3_key, epochs, send_queue)
                             continue
 
                         task_id = task.task_id

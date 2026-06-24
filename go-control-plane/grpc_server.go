@@ -520,6 +520,37 @@ func SendRegistrationTask(ctx context.Context, imgBytes []byte) ([]float32, erro
 }
 
 func handleInferenceResult(result *facerec.InferenceResult) {
+	// Handle finetune progress from worker
+	if result.FinetuneProgress != nil {
+		fp := result.FinetuneProgress
+		switch fp.Type {
+		case "epoch":
+			finetuneJob.mu.Lock()
+			finetuneJob.Epoch = int(fp.Epoch)
+			finetuneJob.Epochs = int(fp.Epochs)
+			finetuneJob.mu.Unlock()
+			finetuneJob.appendLog(fmt.Sprintf("Epoch %d/%d box=%.4f cls=%.4f", fp.Epoch, fp.Epochs, fp.BoxLoss, fp.ClsLoss))
+		case "info":
+			finetuneJob.appendLog(fp.Message)
+		case "done":
+			finetuneJob.appendLog("Training done. Pushing model to S3...")
+			finetuneJob.mu.Lock()
+			finetuneJob.Status = "done"
+			finetuneJob.mu.Unlock()
+			if fp.Version != "" {
+				writeActiveVersion(fp.Version)
+				go func() {
+					pushModelsToS3(fp.Version)
+					n := BroadcastReloadModels()
+					log.Printf("[Finetune] version %s pushed to S3, reload sent to %d worker(s)", fp.Version, n)
+				}()
+			}
+		case "error":
+			finetuneJob.setError(fp.Message)
+		}
+		return
+	}
+
 	// Skip logging metrics completely
 	if result.TaskId == "metrics" {
 		return

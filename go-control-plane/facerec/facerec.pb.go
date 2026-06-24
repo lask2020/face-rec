@@ -22,14 +22,17 @@ const (
 )
 
 type FrameTask struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	TaskId         string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	ImageData      []byte                 `protobuf:"bytes,2,opt,name=image_data,json=imageData,proto3" json:"image_data,omitempty"` // JPEG bytes
-	IsRegistration bool                   `protobuf:"varint,3,opt,name=is_registration,json=isRegistration,proto3" json:"is_registration,omitempty"`
-	DetectMode     string                 `protobuf:"bytes,4,opt,name=detect_mode,json=detectMode,proto3" json:"detect_mode,omitempty"`        // "face" | "plate" | "both"  (default: "face")
-	ReloadModels   bool                   `protobuf:"varint,5,opt,name=reload_models,json=reloadModels,proto3" json:"reload_models,omitempty"` // signal worker to reload models from disk (no image needed)
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	TaskId               string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	ImageData            []byte                 `protobuf:"bytes,2,opt,name=image_data,json=imageData,proto3" json:"image_data,omitempty"` // JPEG bytes
+	IsRegistration       bool                   `protobuf:"varint,3,opt,name=is_registration,json=isRegistration,proto3" json:"is_registration,omitempty"`
+	DetectMode           string                 `protobuf:"bytes,4,opt,name=detect_mode,json=detectMode,proto3" json:"detect_mode,omitempty"`                                   // "face" | "plate" | "both"  (default: "face")
+	ReloadModels         bool                   `protobuf:"varint,5,opt,name=reload_models,json=reloadModels,proto3" json:"reload_models,omitempty"`                            // signal worker to reload models from disk (no image needed)
+	StartFinetune        bool                   `protobuf:"varint,6,opt,name=start_finetune,json=startFinetune,proto3" json:"start_finetune,omitempty"`                         // signal worker to start fine-tuning
+	FinetuneDatasetS3Key string                 `protobuf:"bytes,7,opt,name=finetune_dataset_s3_key,json=finetuneDatasetS3Key,proto3" json:"finetune_dataset_s3_key,omitempty"` // S3 key of exported dataset zip
+	FinetuneEpochs       int32                  `protobuf:"varint,8,opt,name=finetune_epochs,json=finetuneEpochs,proto3" json:"finetune_epochs,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *FrameTask) Reset() {
@@ -97,6 +100,27 @@ func (x *FrameTask) GetReloadModels() bool {
 	return false
 }
 
+func (x *FrameTask) GetStartFinetune() bool {
+	if x != nil {
+		return x.StartFinetune
+	}
+	return false
+}
+
+func (x *FrameTask) GetFinetuneDatasetS3Key() string {
+	if x != nil {
+		return x.FinetuneDatasetS3Key
+	}
+	return ""
+}
+
+func (x *FrameTask) GetFinetuneEpochs() int32 {
+	if x != nil {
+		return x.FinetuneEpochs
+	}
+	return 0
+}
+
 type InferenceResult struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	TaskId              string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
@@ -105,6 +129,7 @@ type InferenceResult struct {
 	ProcessTimeMs       float32                `protobuf:"fixed32,4,opt,name=process_time_ms,json=processTimeMs,proto3" json:"process_time_ms,omitempty"`
 	PlateDetections     []*PlateDetection      `protobuf:"bytes,5,rep,name=plate_detections,json=plateDetections,proto3" json:"plate_detections,omitempty"`
 	PlateTrainingFrames []*PlateTrainingFrame  `protobuf:"bytes,6,rep,name=plate_training_frames,json=plateTrainingFrames,proto3" json:"plate_training_frames,omitempty"`
+	FinetuneProgress    *FinetuneProgress      `protobuf:"bytes,7,opt,name=finetune_progress,json=finetuneProgress,proto3" json:"finetune_progress,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -181,6 +206,105 @@ func (x *InferenceResult) GetPlateTrainingFrames() []*PlateTrainingFrame {
 	return nil
 }
 
+func (x *InferenceResult) GetFinetuneProgress() *FinetuneProgress {
+	if x != nil {
+		return x.FinetuneProgress
+	}
+	return nil
+}
+
+type FinetuneProgress struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "epoch" | "done" | "error" | "info"
+	Epoch         int32                  `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	Epochs        int32                  `protobuf:"varint,3,opt,name=epochs,proto3" json:"epochs,omitempty"`
+	BoxLoss       float32                `protobuf:"fixed32,4,opt,name=box_loss,json=boxLoss,proto3" json:"box_loss,omitempty"`
+	ClsLoss       float32                `protobuf:"fixed32,5,opt,name=cls_loss,json=clsLoss,proto3" json:"cls_loss,omitempty"`
+	Message       string                 `protobuf:"bytes,6,opt,name=message,proto3" json:"message,omitempty"`
+	Version       string                 `protobuf:"bytes,7,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FinetuneProgress) Reset() {
+	*x = FinetuneProgress{}
+	mi := &file_facerec_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FinetuneProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FinetuneProgress) ProtoMessage() {}
+
+func (x *FinetuneProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_facerec_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FinetuneProgress.ProtoReflect.Descriptor instead.
+func (*FinetuneProgress) Descriptor() ([]byte, []int) {
+	return file_facerec_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *FinetuneProgress) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *FinetuneProgress) GetEpoch() int32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *FinetuneProgress) GetEpochs() int32 {
+	if x != nil {
+		return x.Epochs
+	}
+	return 0
+}
+
+func (x *FinetuneProgress) GetBoxLoss() float32 {
+	if x != nil {
+		return x.BoxLoss
+	}
+	return 0
+}
+
+func (x *FinetuneProgress) GetClsLoss() float32 {
+	if x != nil {
+		return x.ClsLoss
+	}
+	return 0
+}
+
+func (x *FinetuneProgress) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *FinetuneProgress) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
 type Detection struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Bbox             []float32              `protobuf:"fixed32,1,rep,packed,name=bbox,proto3" json:"bbox,omitempty"`                                          // [x1, y1, x2, y2]
@@ -192,7 +316,7 @@ type Detection struct {
 
 func (x *Detection) Reset() {
 	*x = Detection{}
-	mi := &file_facerec_proto_msgTypes[2]
+	mi := &file_facerec_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -204,7 +328,7 @@ func (x *Detection) String() string {
 func (*Detection) ProtoMessage() {}
 
 func (x *Detection) ProtoReflect() protoreflect.Message {
-	mi := &file_facerec_proto_msgTypes[2]
+	mi := &file_facerec_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -217,7 +341,7 @@ func (x *Detection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Detection.ProtoReflect.Descriptor instead.
 func (*Detection) Descriptor() ([]byte, []int) {
-	return file_facerec_proto_rawDescGZIP(), []int{2}
+	return file_facerec_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Detection) GetBbox() []float32 {
@@ -257,7 +381,7 @@ type PlateDetection struct {
 
 func (x *PlateDetection) Reset() {
 	*x = PlateDetection{}
-	mi := &file_facerec_proto_msgTypes[3]
+	mi := &file_facerec_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -269,7 +393,7 @@ func (x *PlateDetection) String() string {
 func (*PlateDetection) ProtoMessage() {}
 
 func (x *PlateDetection) ProtoReflect() protoreflect.Message {
-	mi := &file_facerec_proto_msgTypes[3]
+	mi := &file_facerec_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -282,7 +406,7 @@ func (x *PlateDetection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlateDetection.ProtoReflect.Descriptor instead.
 func (*PlateDetection) Descriptor() ([]byte, []int) {
-	return file_facerec_proto_rawDescGZIP(), []int{3}
+	return file_facerec_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PlateDetection) GetBbox() []float32 {
@@ -355,7 +479,7 @@ type PlateTrainingFrame struct {
 
 func (x *PlateTrainingFrame) Reset() {
 	*x = PlateTrainingFrame{}
-	mi := &file_facerec_proto_msgTypes[4]
+	mi := &file_facerec_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -367,7 +491,7 @@ func (x *PlateTrainingFrame) String() string {
 func (*PlateTrainingFrame) ProtoMessage() {}
 
 func (x *PlateTrainingFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_facerec_proto_msgTypes[4]
+	mi := &file_facerec_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -380,7 +504,7 @@ func (x *PlateTrainingFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlateTrainingFrame.ProtoReflect.Descriptor instead.
 func (*PlateTrainingFrame) Descriptor() ([]byte, []int) {
-	return file_facerec_proto_rawDescGZIP(), []int{4}
+	return file_facerec_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PlateTrainingFrame) GetCropJpeg() []byte {
@@ -422,7 +546,7 @@ var File_facerec_proto protoreflect.FileDescriptor
 
 const file_facerec_proto_rawDesc = "" +
 	"\n" +
-	"\rfacerec.proto\x12\afacerec\"\xb2\x01\n" +
+	"\rfacerec.proto\x12\afacerec\"\xb9\x02\n" +
 	"\tFrameTask\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
@@ -430,7 +554,10 @@ const file_facerec_proto_rawDesc = "" +
 	"\x0fis_registration\x18\x03 \x01(\bR\x0eisRegistration\x12\x1f\n" +
 	"\vdetect_mode\x18\x04 \x01(\tR\n" +
 	"detectMode\x12#\n" +
-	"\rreload_models\x18\x05 \x01(\bR\freloadModels\"\xc0\x02\n" +
+	"\rreload_models\x18\x05 \x01(\bR\freloadModels\x12%\n" +
+	"\x0estart_finetune\x18\x06 \x01(\bR\rstartFinetune\x125\n" +
+	"\x17finetune_dataset_s3_key\x18\a \x01(\tR\x14finetuneDatasetS3Key\x12'\n" +
+	"\x0ffinetune_epochs\x18\b \x01(\x05R\x0efinetuneEpochs\"\x88\x03\n" +
 	"\x0fInferenceResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x122\n" +
 	"\n" +
@@ -439,7 +566,16 @@ const file_facerec_proto_rawDesc = "" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12&\n" +
 	"\x0fprocess_time_ms\x18\x04 \x01(\x02R\rprocessTimeMs\x12B\n" +
 	"\x10plate_detections\x18\x05 \x03(\v2\x17.facerec.PlateDetectionR\x0fplateDetections\x12O\n" +
-	"\x15plate_training_frames\x18\x06 \x03(\v2\x1b.facerec.PlateTrainingFrameR\x13plateTrainingFrames\"k\n" +
+	"\x15plate_training_frames\x18\x06 \x03(\v2\x1b.facerec.PlateTrainingFrameR\x13plateTrainingFrames\x12F\n" +
+	"\x11finetune_progress\x18\a \x01(\v2\x19.facerec.FinetuneProgressR\x10finetuneProgress\"\xbe\x01\n" +
+	"\x10FinetuneProgress\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x16\n" +
+	"\x06epochs\x18\x03 \x01(\x05R\x06epochs\x12\x19\n" +
+	"\bbox_loss\x18\x04 \x01(\x02R\aboxLoss\x12\x19\n" +
+	"\bcls_loss\x18\x05 \x01(\x02R\aclsLoss\x12\x18\n" +
+	"\amessage\x18\x06 \x01(\tR\amessage\x12\x18\n" +
+	"\aversion\x18\a \x01(\tR\aversion\"k\n" +
 	"\tDetection\x12\x12\n" +
 	"\x04bbox\x18\x01 \x03(\x02R\x04bbox\x12\x1c\n" +
 	"\tembedding\x18\x02 \x03(\x02R\tembedding\x12,\n" +
@@ -479,25 +615,27 @@ func file_facerec_proto_rawDescGZIP() []byte {
 	return file_facerec_proto_rawDescData
 }
 
-var file_facerec_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_facerec_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_facerec_proto_goTypes = []any{
 	(*FrameTask)(nil),          // 0: facerec.FrameTask
 	(*InferenceResult)(nil),    // 1: facerec.InferenceResult
-	(*Detection)(nil),          // 2: facerec.Detection
-	(*PlateDetection)(nil),     // 3: facerec.PlateDetection
-	(*PlateTrainingFrame)(nil), // 4: facerec.PlateTrainingFrame
+	(*FinetuneProgress)(nil),   // 2: facerec.FinetuneProgress
+	(*Detection)(nil),          // 3: facerec.Detection
+	(*PlateDetection)(nil),     // 4: facerec.PlateDetection
+	(*PlateTrainingFrame)(nil), // 5: facerec.PlateTrainingFrame
 }
 var file_facerec_proto_depIdxs = []int32{
-	2, // 0: facerec.InferenceResult.detections:type_name -> facerec.Detection
-	3, // 1: facerec.InferenceResult.plate_detections:type_name -> facerec.PlateDetection
-	4, // 2: facerec.InferenceResult.plate_training_frames:type_name -> facerec.PlateTrainingFrame
-	1, // 3: facerec.FaceInferenceService.ProcessStream:input_type -> facerec.InferenceResult
-	0, // 4: facerec.FaceInferenceService.ProcessStream:output_type -> facerec.FrameTask
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 0: facerec.InferenceResult.detections:type_name -> facerec.Detection
+	4, // 1: facerec.InferenceResult.plate_detections:type_name -> facerec.PlateDetection
+	5, // 2: facerec.InferenceResult.plate_training_frames:type_name -> facerec.PlateTrainingFrame
+	2, // 3: facerec.InferenceResult.finetune_progress:type_name -> facerec.FinetuneProgress
+	1, // 4: facerec.FaceInferenceService.ProcessStream:input_type -> facerec.InferenceResult
+	0, // 5: facerec.FaceInferenceService.ProcessStream:output_type -> facerec.FrameTask
+	5, // [5:6] is the sub-list for method output_type
+	4, // [4:5] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_facerec_proto_init() }
@@ -511,7 +649,7 @@ func file_facerec_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_facerec_proto_rawDesc), len(file_facerec_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
