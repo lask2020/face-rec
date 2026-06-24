@@ -393,6 +393,8 @@ export default function TrainingReview() {
   const [clearing, setClearing] = useState(false);
   const [finetune, setFinetune] = useState<FinetuneStatus | null>(null);
   const [finetuning, setFinetuning] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [epochs, setEpochs] = useState(30);
   const logBoxRef = useRef<HTMLDivElement>(null);
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
@@ -549,11 +551,23 @@ export default function TrainingReview() {
     if (finetuning || finetune?.status === 'running') return;
     setFinetuning(true);
     try {
-      await trainingApi.startFinetune();
+      await trainingApi.startFinetune(epochs);
       setFinetuning(false);
     } catch (e: unknown) {
       alert('Failed to start training: ' + (e instanceof Error ? e.message : String(e)));
       setFinetuning(false);
+    }
+  };
+
+  const handleStopFinetune = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      await trainingApi.stopFinetune();
+    } catch (e: unknown) {
+      alert('Failed to stop training: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -673,18 +687,45 @@ export default function TrainingReview() {
           >
             Export ZIP
           </a>
-          <button
-            onClick={handleStartFinetune}
-            disabled={finetuning || finetune?.status === 'running'}
-            style={{
-              padding: '7px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none',
-              cursor: finetuning || finetune?.status === 'running' ? 'not-allowed' : 'pointer',
-              background: finetune?.status === 'running' ? '#78350f' : '#7c3aed',
-              color: '#fff', opacity: finetuning ? 0.7 : 1,
-            }}
-          >
-            {finetune?.status === 'running' ? 'Training...' : 'Train Model'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <label style={{ fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Epochs</label>
+            <input
+              type="number" min={1} max={300} step={1}
+              value={epochs}
+              onChange={(e) => setEpochs(Math.max(1, Math.min(300, parseInt(e.target.value) || 30)))}
+              disabled={finetune?.status === 'running'}
+              style={{
+                width: 56, padding: '5px 8px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-input)',
+                color: 'var(--text)', fontSize: 13, textAlign: 'center',
+              }}
+            />
+          </div>
+          {finetune?.status === 'running' ? (
+            <button
+              onClick={handleStopFinetune}
+              disabled={stopping}
+              style={{
+                padding: '7px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none',
+                cursor: stopping ? 'not-allowed' : 'pointer',
+                background: '#dc2626', color: '#fff', opacity: stopping ? 0.7 : 1,
+              }}
+            >
+              {stopping ? 'Stopping...' : 'Stop Training'}
+            </button>
+          ) : (
+            <button
+              onClick={handleStartFinetune}
+              disabled={finetuning}
+              style={{
+                padding: '7px 14px', fontSize: 12, fontWeight: 600, borderRadius: 6, border: 'none',
+                cursor: finetuning ? 'not-allowed' : 'pointer',
+                background: '#7c3aed', color: '#fff', opacity: finetuning ? 0.7 : 1,
+              }}
+            >
+              {finetuning ? 'Starting...' : 'Train Model'}
+            </button>
+          )}
         </div>
       </div>
 

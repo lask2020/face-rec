@@ -461,8 +461,15 @@ export const trainingApi = {
     return `/api/training/plates/export?${p.toString()}`;
   },
 
-  startFinetune: (): Promise<{ status: string }> =>
-    request('/training/plates/finetune', { method: 'POST' }),
+  startFinetune: (epochs: number): Promise<{ status: string }> =>
+    request('/training/plates/finetune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ epochs }),
+    }),
+
+  stopFinetune: (): Promise<{ status: string }> =>
+    request('/training/plates/finetune/stop', { method: 'POST' }),
 
   finetuneStatus: (): Promise<FinetuneStatus> =>
     request('/training/plates/finetune/status'),

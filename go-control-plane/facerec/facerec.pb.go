@@ -31,6 +31,7 @@ type FrameTask struct {
 	StartFinetune        bool                   `protobuf:"varint,6,opt,name=start_finetune,json=startFinetune,proto3" json:"start_finetune,omitempty"`                         // signal worker to start fine-tuning
 	FinetuneDatasetS3Key string                 `protobuf:"bytes,7,opt,name=finetune_dataset_s3_key,json=finetuneDatasetS3Key,proto3" json:"finetune_dataset_s3_key,omitempty"` // S3 key of exported dataset zip
 	FinetuneEpochs       int32                  `protobuf:"varint,8,opt,name=finetune_epochs,json=finetuneEpochs,proto3" json:"finetune_epochs,omitempty"`
+	StopFinetune         bool                   `protobuf:"varint,9,opt,name=stop_finetune,json=stopFinetune,proto3" json:"stop_finetune,omitempty"` // signal worker to abort in-progress fine-tuning
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -119,6 +120,13 @@ func (x *FrameTask) GetFinetuneEpochs() int32 {
 		return x.FinetuneEpochs
 	}
 	return 0
+}
+
+func (x *FrameTask) GetStopFinetune() bool {
+	if x != nil {
+		return x.StopFinetune
+	}
+	return false
 }
 
 type InferenceResult struct {
@@ -546,7 +554,7 @@ var File_facerec_proto protoreflect.FileDescriptor
 
 const file_facerec_proto_rawDesc = "" +
 	"\n" +
-	"\rfacerec.proto\x12\afacerec\"\xb9\x02\n" +
+	"\rfacerec.proto\x12\afacerec\"\xde\x02\n" +
 	"\tFrameTask\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1d\n" +
 	"\n" +
@@ -557,7 +565,8 @@ const file_facerec_proto_rawDesc = "" +
 	"\rreload_models\x18\x05 \x01(\bR\freloadModels\x12%\n" +
 	"\x0estart_finetune\x18\x06 \x01(\bR\rstartFinetune\x125\n" +
 	"\x17finetune_dataset_s3_key\x18\a \x01(\tR\x14finetuneDatasetS3Key\x12'\n" +
-	"\x0ffinetune_epochs\x18\b \x01(\x05R\x0efinetuneEpochs\"\x88\x03\n" +
+	"\x0ffinetune_epochs\x18\b \x01(\x05R\x0efinetuneEpochs\x12#\n" +
+	"\rstop_finetune\x18\t \x01(\bR\fstopFinetune\"\x88\x03\n" +
 	"\x0fInferenceResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x122\n" +
 	"\n" +

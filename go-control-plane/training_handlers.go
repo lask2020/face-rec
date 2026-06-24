@@ -754,6 +754,11 @@ func resolveModelsDir() string {
 }
 
 func startFinetune(c *fiber.Ctx) error {
+	var body struct {
+		Epochs int `json:"epochs"`
+	}
+	_ = c.BodyParser(&body)
+
 	finetuneJob.mu.Lock()
 	if finetuneJob.Status == "running" {
 		finetuneJob.mu.Unlock()
@@ -819,9 +824,11 @@ func startFinetune(c *fiber.Ctx) error {
 		finetuneJob.appendLog("Dataset uploaded. Sending to AI worker...")
 
 		// 4. Broadcast start_finetune to workers via gRPC
-		epochsStr := os.Getenv("FINETUNE_EPOCHS")
+		// Priority: request body > env var > default 30
 		epochs := int32(30)
-		if epochsStr != "" {
+		if body.Epochs > 0 {
+			epochs = int32(body.Epochs)
+		} else if epochsStr := os.Getenv("FINETUNE_EPOCHS"); epochsStr != "" {
 			if n, err := strconv.Atoi(epochsStr); err == nil {
 				epochs = int32(n)
 			}
@@ -847,6 +854,23 @@ func startFinetune(c *fiber.Ctx) error {
 
 func getFinetuneStatus(c *fiber.Ctx) error {
 	return c.JSON(finetuneJob.snapshot())
+}
+
+func stopFinetune(c *fiber.Ctx) error {
+	finetuneJob.mu.Lock()
+	if finetuneJob.Status != "running" {
+		finetuneJob.mu.Unlock()
+		return c.Status(409).JSON(fiber.Map{"error": "no finetune job running"})
+	}
+	finetuneJob.mu.Unlock()
+
+	task := &facerec.FrameTask{StopFinetune: true}
+	delivered := BroadcastFinetuneTask(task)
+	if delivered == 0 {
+		return c.Status(503).JSON(fiber.Map{"error": "no AI workers connected"})
+	}
+	finetuneJob.appendLog("Stop signal sent to worker")
+	return c.JSON(fiber.Map{"status": "stop_sent"})
 }
 
 // buildYoloLabel converts char_labels JSON to YOLO .txt format.

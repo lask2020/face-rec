@@ -752,6 +752,9 @@ def _upload_model_file(http_url: str, version: str, file_path: str, send_queue) 
         return False
 
 
+_finetune_stop_event = threading.Event()
+
+
 def _send_finetune_progress(send_queue, **kwargs):
     """Helper to send FinetuneProgress back to the control plane via gRPC."""
     fp = facerec_pb2.FinetuneProgress(**kwargs)
@@ -771,6 +774,7 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
     import tempfile
     import shutil
 
+    _finetune_stop_event.clear()
     _send_finetune_progress(send_queue, type="info", message="Worker received finetune task — preparing dataset")
 
     # Download dataset zip from S3 (via control plane HTTP)
@@ -875,6 +879,7 @@ def _run_finetune(s3_key: str, epochs: int, send_queue):
             cctv_yaml=cctv_yaml,
             roboflow_base=roboflow_base,
             progress_cb=_on_progress,
+            stop_event=_finetune_stop_event,
         )
     except Exception as e:
         _send_finetune_progress(send_queue, type="error", message=f"Training failed: {e}")
@@ -1134,6 +1139,12 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                 logger.info("LicensePlateEngine reloaded successfully")
                             except Exception as reload_err:
                                 logger.error(f"Failed to reload engine: {reload_err}")
+                            continue
+
+                        # Stop finetune signal
+                        if getattr(task, 'stop_finetune', False):
+                            logger.info("Received stop_finetune signal — setting stop event")
+                            _finetune_stop_event.set()
                             continue
 
                         # Fine-tune signal: run training in background thread

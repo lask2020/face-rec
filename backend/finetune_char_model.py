@@ -150,6 +150,7 @@ FIXED_DATASETS = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _progress_callback = None  # set to a callable(dict) when used inline
+_stop_event = None         # threading.Event set externally to abort training
 
 def emit(obj: dict):
     if _progress_callback is not None:
@@ -399,6 +400,9 @@ def _run(args, tmp_root, YOLO, torch):
                 except Exception:
                     pass
         emit({"type": "epoch", "epoch": trainer.epoch + 1, "epochs": total_epochs, **loss_dict})
+        if _stop_event is not None and _stop_event.is_set():
+            emit({"type": "info", "message": "Stop requested — aborting after this epoch"})
+            trainer.stop = True
 
     # In a PyInstaller frozen build, dataloader subprocesses re-launch the exe,
     # which is unsafe. Load data in the main process (workers=0) when frozen.
@@ -470,9 +474,13 @@ def _run(args, tmp_root, YOLO, torch):
     # ── 6. Export ONNX ────────────────────────────────────────────────────────
     onnx_output = args.output.replace(".pt", ".onnx")
     emit({"type": "info", "message": "Exporting to ONNX..."})
+    # onnxsim (simplify=True) spawns a subprocess — in a PyInstaller frozen exe
+    # that re-launches the GUI. Disable simplify when frozen; skip it otherwise
+    # too since the accuracy/size benefit is minor for inference-only models.
+    is_frozen = getattr(sys, "frozen", False)
     try:
         YOLO(args.output).export(format="onnx", imgsz=args.imgsz, opset=12,
-                                 simplify=True, dynamic=False, half=False)
+                                 simplify=not is_frozen, dynamic=False, half=False)
         alongside = args.output.replace(".pt", ".onnx")
         if os.path.exists(alongside) and alongside != onnx_output:
             shutil.move(alongside, onnx_output)
@@ -509,6 +517,7 @@ def run_finetune_inline(
     cctv_yaml: str | None = None,
     roboflow_base: str | None = None,
     progress_cb=None,
+    stop_event=None,
 ):
     """
     Call fine-tuning directly in-process (no subprocess).
@@ -547,6 +556,9 @@ def run_finetune_inline(
         emit({"type": "error", "message": f"Base model not found: {args.base_model}"})
         return
 
+    global _stop_event
+    _stop_event = stop_event
+
     tmp_root = tempfile.mkdtemp(prefix="finetune_")
     try:
         _run(args, tmp_root, YOLO, torch)
@@ -555,6 +567,7 @@ def run_finetune_inline(
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
         _progress_callback = None
+        _stop_event = None
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ message FrameTask {
   bool start_finetune = 6;     // signal worker to start fine-tuning
   string finetune_dataset_s3_key = 7; // S3 key of exported dataset zip
   int32 finetune_epochs = 8;
+  bool stop_finetune = 9;      // signal worker to abort in-progress fine-tuning
 }
 
 message InferenceResult {
