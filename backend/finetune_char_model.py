@@ -155,30 +155,23 @@ ROBOFLOW_SOURCES = [
 
 
 def download_roboflow_datasets(base_dir: str, api_key: str) -> None:
-    """Download any missing Roboflow datasets into base_dir. Skips already-downloaded ones."""
+    """Download any missing Roboflow datasets into base_dir using the Roboflow SDK."""
     if not api_key:
         return
-    try:
-        from roboflow import Roboflow
-    except ImportError:
-        emit({"type": "info", "message": "roboflow package not installed — skipping auto-download (pip install roboflow)"})
-        return
-
+    from roboflow import Roboflow
     rf = Roboflow(api_key=api_key)
     for ds in ROBOFLOW_SOURCES:
         dest = os.path.join(base_dir, ds["folder"])
-        # Consider already downloaded if the train/images subfolder exists and has files
         img_dir = os.path.join(dest, "train", "images")
         if os.path.isdir(img_dir) and any(True for _ in os.scandir(img_dir)):
             emit({"type": "info", "message": f"[roboflow] {ds['folder']} already exists — skipping"})
             continue
         emit({"type": "info", "message": f"[roboflow] Downloading {ds['folder']} ..."})
         try:
-            project = rf.workspace(ds["workspace"]).project(ds["project"])
-            project.version(ds["version"]).download("yolov8", location=dest)
-            emit({"type": "info", "message": f"[roboflow] {ds['folder']} downloaded"})
+            rf.workspace(ds["workspace"]).project(ds["project"]).version(ds["version"]).download("yolov8", location=dest)
+            emit({"type": "info", "message": f"[roboflow] {ds['folder']} downloaded OK"})
         except Exception as e:
-            emit({"type": "info", "message": f"[roboflow] {ds['folder']} download failed: {e}"})
+            emit({"type": "info", "message": f"[roboflow] {ds['folder']} failed: {e}"})
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

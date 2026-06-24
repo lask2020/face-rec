@@ -23,3 +23,6 @@ ultralytics>=8.4.0
 
 # ─── GUI Framework ───
 PyQt6>=6.6.0
+
+# ─── Dataset download ───
+roboflow>=1.1.0

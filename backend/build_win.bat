@@ -128,6 +128,7 @@ pyinstaller --noconfirm --noconsole --onefile ^
     --add-data "facerec.proto;." ^
     --hidden-import finetune_char_model ^
     --collect-binaries onnxruntime ^
+    --collect-all roboflow ^
     %DIRECTML_ARGS% ^
     ai_worker_gui.py
 
