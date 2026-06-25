@@ -34,6 +34,7 @@ source "$VENV_DIR"/bin/activate
 echo -e "${YELLOW}Upgrading pip and installing python packages...${NC}"
 pip install --upgrade pip setuptools wheel
 pip install -r backend/requirements.txt
+pip install -U ultralytics
 
 # 3. Compile gRPC protobuf definitions locally
 echo -e "${YELLOW}Compiling gRPC protobuf definitions...${NC}"

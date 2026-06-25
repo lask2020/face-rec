@@ -407,6 +407,10 @@ def _run(args, tmp_root, YOLO, torch):
             device = "0"
         elif torch.backends.mps.is_available():
             device = "mps"
+            # PyTorch MPS has a known bug with index_put_ used in YOLO loss.
+            # Setting this env var makes only the broken ops silently fall back
+            # to CPU while everything else stays on MPS (much faster than full CPU).
+            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         else:
             try:
                 import torch_directml
@@ -501,7 +505,7 @@ def _run(args, tmp_root, YOLO, torch):
             train_batch = 32
         else:
             train_batch = args.batch
-        train_cache = "ram" if is_small_gpu else False
+        train_cache = "disk" if is_small_gpu else False
 
         # Fine-tune (not train-from-scratch) hyperparameters. The previous run
         # used ultralytics defaults (lr0=0.01, no frozen layers), which on a
