@@ -410,6 +410,7 @@ export interface AIReviewResult {
   id: number;
   suggestion: 'approve' | 'reject' | 'error';
   corrected_text: string | null;
+  corrected_labels: CharLabel[] | null;
   reason: string;
 }
 

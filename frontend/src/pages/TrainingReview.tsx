@@ -783,26 +783,38 @@ export default function TrainingReview() {
   };
 
   const handleApplyAISuggestions = async () => {
-    const approveWithCorrection: { id: number; corrected_text: string }[] = [];
+    const approveWithData: { id: number; corrected_text?: string; char_labels?: string }[] = [];
     const approveIds: number[] = [];
     const rejectIds: number[] = [];
+
     for (const id of selectedIds) {
       const r = aiResults.get(id);
       if (r?.suggestion === 'approve') {
-        if (r.corrected_text) approveWithCorrection.push({ id, corrected_text: r.corrected_text });
-        else approveIds.push(id);
+        const hasCorrection = r.corrected_text || r.corrected_labels?.length;
+        if (hasCorrection) {
+          const update: { id: number; corrected_text?: string; char_labels?: string } = { id };
+          if (r.corrected_text) update.corrected_text = r.corrected_text;
+          // corrected_labels already has full cx/cy/bw/bh — use directly
+          if (r.corrected_labels?.length) update.char_labels = JSON.stringify(r.corrected_labels);
+          approveWithData.push(update);
+        } else {
+          approveIds.push(id);
+        }
       } else if (r?.suggestion === 'reject') {
         rejectIds.push(id);
       }
     }
-    if (!approveWithCorrection.length && !approveIds.length && !rejectIds.length) return;
+
+    if (!approveWithData.length && !approveIds.length && !rejectIds.length) return;
+
     await Promise.all([
-      ...approveWithCorrection.map(({ id, corrected_text }) =>
-        trainingApi.update(id, { status: 'approved', corrected_text })
+      ...approveWithData.map(({ id, corrected_text, char_labels }) =>
+        trainingApi.update(id, { status: 'approved', ...(corrected_text ? { corrected_text } : {}), ...(char_labels ? { char_labels } : {}) })
       ),
       approveIds.length ? trainingApi.bulkUpdate(approveIds, 'approved') : Promise.resolve(),
       rejectIds.length ? trainingApi.bulkUpdate(rejectIds, 'rejected') : Promise.resolve(),
     ]);
+
     setSelectedIds(new Set());
     setAIResults(new Map());
     load(); loadStats();
