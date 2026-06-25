@@ -72,6 +72,7 @@ func main() {
 	api.Get("/training/plates/:id", getTrainingSample)
 	api.Put("/training/plates/:id", updateTrainingSample)
 	api.Post("/training/plates/bulk", bulkUpdateTrainingSamples)
+	api.Post("/training/plates/ai-review", aiReviewTrainingSamples)
 	api.Post("/training/plates/finetune", startFinetune)
 	api.Post("/training/plates/finetune/stop", stopFinetune)
 	api.Get("/training/plates/finetune/status", getFinetuneStatus)

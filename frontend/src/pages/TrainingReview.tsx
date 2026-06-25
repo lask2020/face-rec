@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { trainingApi, modelApi, settingsApi, workersApi } from '../api/client';
-import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion, Worker } from '../api/client';
+import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion, Worker, AIReviewResult } from '../api/client';
 
 const LIMIT = 20;
 
@@ -301,10 +301,11 @@ interface SampleCardProps {
   onApproveTrack: () => void;
   onReject: () => void;
   onSaveLabels: (charLabels: CharLabel[]) => void;
+  aiResult?: AIReviewResult | null;
 }
 
 function SampleCard({
-  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels,
+  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels, aiResult,
 }: SampleCardProps) {
   const [labels, setLabels] = useState<CharLabel[]>(() => parsedLabels(sample.char_labels));
   const [selectedCharIdx, setSelectedCharIdx] = useState<number | null>(null);
@@ -383,6 +384,39 @@ function SampleCard({
           {sample.status}
         </span>
       </div>
+
+      {/* AI review banner */}
+      {aiResult && (
+        <div style={{
+          padding: '4px 8px',
+          background: aiResult.suggestion === 'approve' ? 'rgba(22,163,74,0.15)'
+            : aiResult.suggestion === 'reject' ? 'rgba(220,38,38,0.15)'
+            : 'rgba(100,116,139,0.15)',
+          borderBottom: `1px solid ${
+            aiResult.suggestion === 'approve' ? '#16a34a'
+            : aiResult.suggestion === 'reject' ? '#dc2626'
+            : '#64748b'
+          }`,
+          display: 'flex', alignItems: 'flex-start', gap: 6,
+        }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 3, flexShrink: 0,
+            background: aiResult.suggestion === 'approve' ? '#16a34a'
+              : aiResult.suggestion === 'reject' ? '#dc2626' : '#64748b',
+            color: '#fff', textTransform: 'uppercase',
+          }}>
+            AI {aiResult.suggestion}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+            {aiResult.corrected_text && aiResult.corrected_text !== sample.raw_text && (
+              <span style={{ color: '#f59e0b', fontWeight: 600, marginRight: 4 }}>
+                → {aiResult.corrected_text}
+              </span>
+            )}
+            {aiResult.reason}
+          </span>
+        </div>
+      )}
 
       {/* Canvas */}
       <div style={{ padding: 4, background: '#000' }}>
@@ -502,6 +536,11 @@ export default function TrainingReview() {
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
   const [showVersions, setShowVersions] = useState(false);
+  const [geminiKey, setGeminiKey] = useState('');
+  const [geminiKeySaved, setGeminiKeySaved] = useState(false);
+  const [savingGeminiKey, setSavingGeminiKey] = useState(false);
+  const [aiResults, setAIResults] = useState<Map<number, AIReviewResult>>(new Map());
+  const [aiReviewing, setAIReviewing] = useState(false);
 
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
@@ -541,6 +580,9 @@ export default function TrainingReview() {
   useEffect(() => {
     settingsApi.get('roboflow_api_key').then((s) => {
       if (s.value) setRoboflowKey(s.value);
+    }).catch(() => {});
+    settingsApi.get('gemini_api_key').then((s) => {
+      if (s.value) setGeminiKey(s.value);
     }).catch(() => {});
   }, []);
 
@@ -708,6 +750,60 @@ export default function TrainingReview() {
     } catch { /* ignore */ } finally {
       setSavingKey(false);
     }
+  };
+
+  const handleSaveGeminiKey = async () => {
+    setSavingGeminiKey(true);
+    try {
+      await settingsApi.set('gemini_api_key', geminiKey);
+      setGeminiKeySaved(true);
+      setTimeout(() => setGeminiKeySaved(false), 2000);
+    } catch { /* ignore */ } finally {
+      setSavingGeminiKey(false);
+    }
+  };
+
+  const handleAIReview = async () => {
+    if (!selectedIds.size || aiReviewing) return;
+    setAIReviewing(true);
+    try {
+      const { results } = await trainingApi.aiReview([...selectedIds]);
+      setAIResults((prev) => {
+        const next = new Map(prev);
+        for (const r of results) next.set(r.id, r);
+        return next;
+      });
+    } catch (e: unknown) {
+      alert('AI review failed: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setAIReviewing(false);
+    }
+  };
+
+  const handleApplyAISuggestions = async () => {
+    const approveWithCorrection: { id: number; corrected_text: string }[] = [];
+    const approveIds: number[] = [];
+    const rejectIds: number[] = [];
+    for (const id of selectedIds) {
+      const r = aiResults.get(id);
+      if (r?.suggestion === 'approve') {
+        if (r.corrected_text) approveWithCorrection.push({ id, corrected_text: r.corrected_text });
+        else approveIds.push(id);
+      } else if (r?.suggestion === 'reject') {
+        rejectIds.push(id);
+      }
+    }
+    if (!approveWithCorrection.length && !approveIds.length && !rejectIds.length) return;
+    await Promise.all([
+      ...approveWithCorrection.map(({ id, corrected_text }) =>
+        trainingApi.update(id, { status: 'approved', corrected_text })
+      ),
+      approveIds.length ? trainingApi.bulkUpdate(approveIds, 'approved') : Promise.resolve(),
+      rejectIds.length ? trainingApi.bulkUpdate(rejectIds, 'rejected') : Promise.resolve(),
+    ]);
+    setSelectedIds(new Set());
+    setAIResults(new Map());
+    load(); loadStats();
   };
 
   const handleStartFinetune = async () => {
@@ -944,6 +1040,32 @@ export default function TrainingReview() {
               }}
             >
               {roboflowKeySaved ? 'Saved' : 'Save'}
+            </button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="password"
+              value={geminiKey}
+              onChange={(e) => setGeminiKey(e.target.value)}
+              placeholder="Gemini API key"
+              style={{
+                width: 160, padding: '5px 8px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg-input)',
+                color: 'var(--text)', fontSize: 12,
+              }}
+            />
+            <button
+              onClick={handleSaveGeminiKey}
+              disabled={savingGeminiKey}
+              style={{
+                padding: '5px 10px', fontSize: 12, borderRadius: 6,
+                border: '1px solid var(--border)',
+                cursor: savingGeminiKey ? 'not-allowed' : 'pointer',
+                background: geminiKeySaved ? '#16a34a' : 'var(--bg-card)',
+                color: geminiKeySaved ? '#fff' : 'var(--text)',
+              }}
+            >
+              {geminiKeySaved ? 'Saved' : 'Save'}
             </button>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1189,6 +1311,36 @@ export default function TrainingReview() {
               style={{ padding: '5px 10px', fontSize: 12, background: '#dc2626', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Reject all
             </button>
+            <button
+              onClick={handleAIReview}
+              disabled={aiReviewing}
+              style={{
+                padding: '5px 12px', fontSize: 12, fontWeight: 600,
+                background: aiReviewing ? '#374151' : '#7c3aed',
+                color: '#fff', border: 'none', borderRadius: 6,
+                cursor: aiReviewing ? 'not-allowed' : 'pointer',
+                opacity: aiReviewing ? 0.7 : 1,
+              }}
+            >
+              {aiReviewing ? '⏳ AI กำลังตรวจ...' : '✨ Pre-review by AI'}
+            </button>
+            {(() => {
+              const approveCount = [...selectedIds].filter(id => aiResults.get(id)?.suggestion === 'approve').length;
+              const rejectCount = [...selectedIds].filter(id => aiResults.get(id)?.suggestion === 'reject').length;
+              const hasResults = approveCount + rejectCount > 0;
+              return hasResults ? (
+                <button
+                  onClick={handleApplyAISuggestions}
+                  style={{
+                    padding: '5px 12px', fontSize: 12, fontWeight: 600,
+                    background: '#0891b2', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer',
+                  }}
+                  title={`Apply: ${approveCount} approve, ${rejectCount} reject`}
+                >
+                  Apply AI ({approveCount}✓ {rejectCount}✕)
+                </button>
+              ) : null;
+            })()}
           </>
         )}
 
@@ -1227,6 +1379,7 @@ export default function TrainingReview() {
               onApproveTrack={() => handleApproveTrack(s.track_id)}
               onReject={() => handleReject(s.id)}
               onSaveLabels={(labels) => handleSaveLabels(s.id, labels)}
+              aiResult={aiResults.get(s.id) ?? null}
             />
           ))}
         </div>

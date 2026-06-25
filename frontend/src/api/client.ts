@@ -406,6 +406,13 @@ export interface ExportPreview {
   conf_max: string;
 }
 
+export interface AIReviewResult {
+  id: number;
+  suggestion: 'approve' | 'reject' | 'error';
+  corrected_text: string | null;
+  reason: string;
+}
+
 export const trainingApi = {
   list: (params: {
     page?: number;
@@ -460,6 +467,13 @@ export const trainingApi = {
     if (conf_max != null) p.set('conf_max', String(conf_max));
     return `/api/training/plates/export?${p.toString()}`;
   },
+
+  aiReview: (ids: number[]): Promise<{ results: AIReviewResult[] }> =>
+    request('/training/plates/ai-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    }),
 
   startFinetune: (epochs: number, workerId?: string): Promise<{ status: string }> =>
     request('/training/plates/finetune', {
