@@ -137,12 +137,17 @@ export interface WorkerCameraInfo {
 }
 
 export interface WorkerInfo {
-  id: string;
-  connected_at: string;
-  uptime: string;
+  name: string;           // persistent identity key
+  display_name: string;
+  session_id?: string;    // current session UUID (only when online)
+  role: string;           // "inference" | "training" | "both"
+  max_cameras: number;    // 0 = unlimited
+  connected_at?: string;
+  uptime?: string;
   cameras: WorkerCameraInfo[];
   avg_process_ms: number;
   is_paused: boolean;
+  is_online: boolean;
 }
 
 export interface WorkerList {
@@ -256,8 +261,17 @@ export const api = {
   listWorkers: () =>
     request<WorkerList>('/workers'),
 
-  toggleWorkerPause: (id: string) =>
-    request<{ id: string; is_paused: boolean }>(`/workers/${id}/toggle-pause`, { method: 'POST' }),
+  toggleWorkerPause: (name: string) =>
+    request<{ name: string; is_paused: boolean }>(`/workers/${encodeURIComponent(name)}/toggle-pause`, { method: 'POST' }),
+
+  updateWorkerConfig: (name: string, config: { display_name?: string; role?: string; max_cameras?: number }) =>
+    request<WorkerInfo>(`/workers/${encodeURIComponent(name)}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify(config),
+    }),
+
+  deleteWorker: (name: string) =>
+    request<{ deleted: string }>(`/workers/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
   // Surveillance Station
   ssTestConnection: (data: SSConnectRequest) =>
@@ -478,11 +492,11 @@ export const trainingApi = {
       body: JSON.stringify({ ids }),
     }),
 
-  startFinetune: (epochs: number, workerId?: string): Promise<{ status: string }> =>
+  startFinetune: (epochs: number, workerName?: string): Promise<{ status: string }> =>
     request('/training/plates/finetune', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ epochs, ...(workerId ? { worker_id: workerId } : {}) }),
+      body: JSON.stringify({ epochs, ...(workerName ? { worker_name: workerName } : {}) }),
     }),
 
   stopFinetune: (): Promise<{ status: string }> =>

@@ -302,11 +302,14 @@ interface SampleCardProps {
   onReject: () => void;
   onSaveLabels: (charLabels: CharLabel[]) => void;
   onApplyAI: () => void;
+  onAIReview: () => void;
+  aiReviewing?: boolean;  // currently processing this card
+  aiQueued?: boolean;     // waiting in queue
   aiResult?: AIReviewResult | null;
 }
 
 function SampleCard({
-  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels, onApplyAI, aiResult,
+  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels, onApplyAI, onAIReview, aiReviewing, aiQueued, aiResult,
 }: SampleCardProps) {
   const [labels, setLabels] = useState<CharLabel[]>(() => parsedLabels(sample.char_labels));
   const [selectedCharIdx, setSelectedCharIdx] = useState<number | null>(null);
@@ -507,6 +510,19 @@ function SampleCard({
           style={{ flex: 1, fontSize: 11, padding: '4px 0', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
           ✕ Reject
         </button>
+        <button
+          onClick={onAIReview}
+          disabled={aiReviewing || aiQueued}
+          title={aiReviewing ? 'กำลังตรวจ…' : aiQueued ? 'รอคิว…' : 'Pre-review by AI'}
+          style={{
+            flex: 1, fontSize: 11, padding: '4px 0', border: 'none', borderRadius: 4,
+            cursor: (aiReviewing || aiQueued) ? 'not-allowed' : 'pointer',
+            background: aiReviewing ? '#374151' : aiQueued ? '#4b3a6b' : '#7c3aed',
+            color: '#fff', opacity: (aiReviewing || aiQueued) ? 0.75 : 1,
+          }}
+        >
+          {aiReviewing ? '⏳' : aiQueued ? '🕐' : '✨ AI'}
+        </button>
       </div>
 
       {/* Meta */}
@@ -556,6 +572,10 @@ export default function TrainingReview() {
   const [savingGeminiKey, setSavingGeminiKey] = useState(false);
   const [aiResults, setAIResults] = useState<Map<number, AIReviewResult>>(new Map());
   const [aiReviewing, setAIReviewing] = useState(false);
+  const [aiReviewingId, setAIReviewingId] = useState<number | null>(null);
+  const [aiQueuedIds, setAIQueuedIds] = useState<Set<number>>(new Set());
+  const reviewQueue = useRef<number[]>([]);
+  const reviewProcessing = useRef(false);
 
   const totalPages = Math.max(1, Math.ceil(total / LIMIT));
 
@@ -812,21 +832,43 @@ export default function TrainingReview() {
     }
   };
 
-  const handleAIReview = async () => {
-    if (!selectedIds.size || aiReviewing) return;
-    setAIReviewing(true);
-    try {
-      const { results } = await trainingApi.aiReview([...selectedIds]);
-      setAIResults((prev) => {
-        const next = new Map(prev);
-        for (const r of results) next.set(r.id, r);
-        return next;
-      });
-    } catch (e: unknown) {
-      alert('AI review failed: ' + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setAIReviewing(false);
+  const processReviewQueue = useCallback(async () => {
+    if (reviewProcessing.current) return;
+    reviewProcessing.current = true;
+    while (reviewQueue.current.length > 0) {
+      const id = reviewQueue.current.shift()!;
+      setAIQueuedIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+      setAIReviewingId(id);
+      try {
+        const { results } = await trainingApi.aiReview([id]);
+        setAIResults((prev) => {
+          const next = new Map(prev);
+          for (const r of results) next.set(r.id, r);
+          return next;
+        });
+      } catch { /* silent — don't alert mid-queue */ }
+      setAIReviewingId(null);
     }
+    reviewProcessing.current = false;
+    setAIReviewing(false);
+  }, []);
+
+  const enqueueAIReview = useCallback((ids: number[]) => {
+    const toAdd = ids.filter((id) => !reviewQueue.current.includes(id) && id !== aiReviewingId);
+    if (!toAdd.length) return;
+    reviewQueue.current.push(...toAdd);
+    setAIQueuedIds((prev) => { const next = new Set(prev); toAdd.forEach((id) => next.add(id)); return next; });
+    setAIReviewing(true);
+    processReviewQueue();
+  }, [aiReviewingId, processReviewQueue]);
+
+  const handleAIReview = () => {
+    if (!selectedIds.size) return;
+    enqueueAIReview([...selectedIds]);
+  };
+
+  const handleAIReviewSingle = (id: number) => {
+    enqueueAIReview([id]);
   };
 
   const handleApplyAISuggestions = async () => {
@@ -1394,7 +1436,9 @@ export default function TrainingReview() {
                 opacity: aiReviewing ? 0.7 : 1,
               }}
             >
-              {aiReviewing ? '⏳ AI กำลังตรวจ...' : '✨ Pre-review by AI'}
+              {aiReviewing
+                ? `⏳ AI ตรวจอยู่… (เหลือ ${reviewQueue.current.length + (aiReviewingId !== null ? 1 : 0)} รายการ)`
+                : '✨ Pre-review by AI'}
             </button>
             {(() => {
               const approveCount = [...selectedIds].filter(id => aiResults.get(id)?.suggestion === 'approve').length;
@@ -1452,6 +1496,9 @@ export default function TrainingReview() {
               onReject={() => handleReject(s.id)}
               onSaveLabels={(labels) => handleSaveLabels(s.id, labels)}
               onApplyAI={() => handleApplyAIToSample(s.id)}
+              onAIReview={() => handleAIReviewSingle(s.id)}
+              aiReviewing={aiReviewingId === s.id}
+              aiQueued={aiQueuedIds.has(s.id)}
               aiResult={aiResults.get(s.id) ?? null}
             />
           ))}

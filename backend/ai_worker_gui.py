@@ -111,8 +111,6 @@ class AIWorkerWindow(QMainWindow):
 
         self.worker_thread = None
         self.is_running = False
-        name = self.worker_name_value
-        self.setWindowTitle(f"FaceRec AI Worker — {name}" if name else "FaceRec AI Worker Node")
 
         import socket as _socket
         self.worker_name_value = os.getenv("WORKER_NAME", "") or _socket.gethostname()
@@ -128,6 +126,9 @@ class AIWorkerWindow(QMainWindow):
         self.finetune_lr0_value = 0.001
         self.finetune_freeze_value = 10
         self._load_config()
+
+        name = self.worker_name_value
+        self.setWindowTitle(f"FaceRec AI Worker — {name}" if name else "FaceRec AI Worker Node")
 
         self.setup_ui()
         self.setup_logging()
