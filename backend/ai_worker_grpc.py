@@ -301,6 +301,11 @@ MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame d
 TRAINING_CAPTURE_CONF_MIN = float(os.getenv("TRAINING_CAPTURE_CONF_MIN", "0.45"))
 # Max frames per track to send as training data (pick highest-confidence ones)
 TRAINING_MAX_FRAMES_PER_TRACK = int(os.getenv("TRAINING_MAX_FRAMES_PER_TRACK", "3"))
+# Multiplier applied to the stored confidence when a plate only became valid AFTER
+# correct_common_errors() fixed an OCR artifact. A corrected read is genuinely less
+# certain than one that matched plate rules directly, so its confidence should reflect
+# that — otherwise corrected plates can outrank clean reads when filtering/sorting.
+PLATE_CORRECTION_CONF_PENALTY = float(os.getenv("PLATE_CORRECTION_CONF_PENALTY", "0.8"))
 
 
 def clean_cooldowns():
@@ -416,18 +421,36 @@ def _assemble_multi_frame(frame_results: list) -> PlateResult:
       4. Validate and return a new PlateResult whose confidence is the mean of
          per-slot best confidences (no single weak character drags it down).
     """
-    # Step 1 — group by char count (skip frames with no char data)
-    count_groups: dict = defaultdict(list)
-    for pr in frame_results:
-        if pr.chars:
-            count_groups[len(pr.chars)].append(pr)
+    # Step 0 — drop structurally-implausible frames BEFORE voting.
+    # The detector sometimes emits garbage frames (all-digit reads, or absurd char
+    # counts like 9) where it mistook consonants for numbers. If those pollute the
+    # vote they produce an assembled read that is digit-only and worse than any single
+    # clean frame — exactly the '377131565' / '986689' cases seen in production. A real
+    # Thai plate always has >= 1 consonant and is never longer than ~8 chars, so:
+    #   1. keep only frames with a plausible char count (2..8)
+    #   2. if ANY surviving frame actually saw a consonant, discard the consonant-less
+    #      (pure-digit) frames entirely — they are detector noise, not partial reads.
+    def _has_consonant(pr) -> bool:
+        return any('ก' <= c.char <= 'ฮ' for c in pr.chars)
 
-    # Fallback: no char-level data at all (old-path or engine error)
-    if not count_groups:
+    usable = [pr for pr in frame_results if pr.chars and 2 <= len(pr.chars) <= 8]
+    with_cons = [pr for pr in usable if _has_consonant(pr)]
+    if with_cons:
+        usable = with_cons
+
+    # Fallback: nothing plausible to assemble (old-path or engine error)
+    if not usable:
         return max(frame_results, key=lambda pr: pr.confidence)
 
-    # Step 2 — majority count
-    best_count = max(count_groups, key=lambda k: len(count_groups[k]))
+    # Step 1 — group surviving frames by char count
+    count_groups: dict = defaultdict(list)
+    for pr in usable:
+        count_groups[len(pr.chars)].append(pr)
+
+    # Step 2 — pick the count group with the highest TOTAL confidence, not the most
+    # frames. A few high-confidence reads of the right length should outweigh many
+    # low-confidence garbage frames that happen to share a wrong length.
+    best_count = max(count_groups, key=lambda k: sum(p.confidence for p in count_groups[k]))
     candidates = count_groups[best_count]
 
     # Step 3 — slot pool: slot_idx → list of (char, conf)
@@ -452,13 +475,35 @@ def _assemble_multi_frame(frame_results: list) -> PlateResult:
     mean_conf = total_conf / best_count
 
     # Step 4 — validate against Thai plate rules
+    import re as _re
+    was_corrected = False
     is_valid, normalized, _ = LicensePlateValidator.validate(raw_text)
     if not is_valid:
         corrected = LicensePlateValidator.correct_common_errors(raw_text)
         if corrected:
             is_valid, normalized, _ = LicensePlateValidator.validate(corrected)
+            # Only count it as a "correction" if actual characters changed (an OCR
+            # artifact fix like เ→4 or B→8). Plain hyphen/space insertion is cosmetic
+            # — validate() requires a hyphen, so every clean read passes through here —
+            # and must NOT be penalized.
+            if is_valid:
+                strip = lambda s: _re.sub(r'[\s\-–—]', '', s)
+                was_corrected = strip(corrected) != strip(raw_text)
 
     plate_number = normalized if is_valid else None
+
+    # Confidence policy:
+    #   no valid plate        → halve (noisy / unparseable)
+    #   plate via correction  → penalty: the raw read didn't satisfy plate rules on its
+    #                           own, so the stored confidence shouldn't look as trustworthy
+    #                           as a clean read
+    #   plate read cleanly    → full mean confidence
+    if plate_number is None:
+        final_conf = mean_conf * 0.5
+    elif was_corrected:
+        final_conf = mean_conf * PLATE_CORRECTION_CONF_PENALTY
+    else:
+        final_conf = mean_conf
 
     # Province: majority vote across candidate frames
     provinces = [pr.province for pr in candidates if pr.province]
@@ -468,7 +513,7 @@ def _assemble_multi_frame(frame_results: list) -> PlateResult:
 
     return PlateResult(
         plate_number=plate_number,
-        confidence=mean_conf if plate_number else mean_conf * 0.5,
+        confidence=final_conf,
         bbox=best_frame.bbox,
         plate_type=best_frame.plate_type,
         province=province,

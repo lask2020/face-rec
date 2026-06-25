@@ -549,11 +549,18 @@ class LicensePlateEngine:
             logger.debug("Discarding fragment '%s' (len=%d)", raw_text, len(raw_text))
             return []
 
+        import re as _re
+        was_corrected = False
         is_valid, normalized, _ = validator.validate(raw_text)
         if not is_valid:
             corrected = validator.correct_common_errors(raw_text)
             if corrected:
                 is_valid, normalized, _ = validator.validate(corrected)
+                # Only a real artifact fix (characters changed) counts as a correction;
+                # plain hyphen insertion is cosmetic and must not be penalized.
+                if is_valid:
+                    _strip = lambda s: _re.sub(r'[\s\-–—]', '', s)
+                    was_corrected = _strip(corrected) != _strip(raw_text)
 
         plate_number = normalized if is_valid else None
 
@@ -562,9 +569,19 @@ class LicensePlateEngine:
             logger.debug("Discarding low-conf invalid plate '%s' (avg_conf=%.2f)", raw_text, avg_conf)
             return []
 
+        # Confidence policy: a plate that only validated AFTER artifact correction is
+        # less certain than a clean read, so penalize it (env-tunable, default 0.8).
+        correction_penalty = float(os.environ.get("PLATE_CORRECTION_CONF_PENALTY", "0.8"))
+        if plate_number is None:
+            plate_conf = avg_conf * 0.5
+        elif was_corrected:
+            plate_conf = min_conf * correction_penalty
+        else:
+            plate_conf = min_conf
+
         return [PlateResult(
             plate_number=plate_number,
-            confidence=min_conf if plate_number else avg_conf * 0.5,
+            confidence=plate_conf,
             bbox=[float(x1), float(y1), float(x2), float(y2)],
             plate_type='standard',
             province=province_detected,

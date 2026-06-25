@@ -190,76 +190,6 @@ class LicensePlateValidator:
                         return (False, None, 0.2)
         
         return (is_valid, normalized, confidence)
-    
-    # Characters that are actually used on Thai license plates (high-frequency consonants)
-    PLATE_CONSONANTS = set('กขคฆงจฉชซญฐฑฒณดตถทธนบปผฝพฟภมยรลวศษสหฬอฮ')
-    
-    # Ranked candidate map: each OCR artifact maps to a LIST of Thai consonants
-    # ordered by visual similarity AND frequency on Thai plates.
-    # First match that is a valid plate consonant wins.
-    SHAPE_CANDIDATES = {
-        'n': ['ก', 'ณ'], 'N': ['ก', 'ณ'],
-        'm': ['พ', 'ฟ'], 'M': ['พ', 'ฟ'],
-        'w': ['พ', 'ฟ'], 'W': ['พ', 'ฟ'],
-        'u': ['บ', 'ป'], 'U': ['บ', 'ป'],
-        'o': ['ก', 'อ', 'ด'], 'O': ['ก', 'อ', 'ด'],  
-        '0': ['ก', 'อ', 'ด'],  # 0 looks like ก (closed loop) more often than อ on plates!
-        's': ['ร', 'ว'], 'S': ['ร', 'ว'],
-        '5': ['ธ', 'ร'], '2': ['ว', 'ร'], '7': ['ว', 'ก'],
-        '8': ['ข', 'ค'], '9': ['จ', 'ง'], '3': ['ร', 'ว'],
-        'E': ['ย', 'ข'], 'e': ['ย', 'ข'],
-        'c': ['ร', 'ว'], 'C': ['ร', 'ว'],
-        'l': ['เ', 'ก'], 'I': ['เ', 'ก'],
-        'd': ['ด', 'ค'], 'D': ['ด', 'ค'],
-        'a': ['ค', 'ศ'], 'A': ['ค', 'ศ'],
-        'b': ['ป', 'บ'], 'B': ['ป', 'บ'],
-        'p': ['ม', 'น'], 'P': ['ม', 'น'],
-        'v': ['บ', 'ป'], 'V': ['บ', 'ป'],
-        'h': ['ห', 'น'], 'H': ['ห', 'น'],
-        't': ['ท', 'ต'], 'T': ['ท', 'ต'],
-    }
-
-    @staticmethod
-    def _map_to_thai(text: str) -> str:
-        """
-        Map OCR artifacts back to Thai consonants using ranked candidates.
-        
-        For a 2-char consonant slot, tries all permutations of candidate mappings
-        and picks the first combo where BOTH characters are valid plate consonants.
-        Falls back to first candidate if no perfect pair is found.
-        """
-        if len(text) == 2:
-            # Get candidate lists for each character
-            c1_candidates = LicensePlateValidator.SHAPE_CANDIDATES.get(text[0], [text[0]])
-            c2_candidates = LicensePlateValidator.SHAPE_CANDIDATES.get(text[1], [text[1]])
-            
-            # If the character is already Thai, use it directly
-            if text[0] in LicensePlateValidator.PLATE_CONSONANTS:
-                c1_candidates = [text[0]]
-            if text[1] in LicensePlateValidator.PLATE_CONSONANTS:
-                c2_candidates = [text[1]]
-            
-            # Try all combos, prefer pairs where both are valid plate consonants
-            for c1 in c1_candidates:
-                for c2 in c2_candidates:
-                    if (c1 in LicensePlateValidator.PLATE_CONSONANTS and 
-                        c2 in LicensePlateValidator.PLATE_CONSONANTS):
-                        return c1 + c2
-            
-            # Fallback: just use first candidate for each
-            best_c1 = c1_candidates[0] if c1_candidates else text[0]
-            best_c2 = c2_candidates[0] if c2_candidates else text[1]
-            return best_c1 + best_c2
-        
-        # For single chars or longer strings, use simple first-candidate mapping
-        result = []
-        for c in text:
-            candidates = LicensePlateValidator.SHAPE_CANDIDATES.get(c, [c])
-            if c in LicensePlateValidator.PLATE_CONSONANTS:
-                result.append(c)
-            else:
-                result.append(candidates[0] if candidates else c)
-        return "".join(result)
 
     @staticmethod
     def correct_common_errors(text: str) -> Optional[str]:
@@ -285,35 +215,33 @@ class LicensePlateValidator:
             return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
             
         # 2. STRIP HYPHENS — OCR often inserts fake hyphens mid-plate (e.g. 'SU0-1292')
-        # Remove all hyphens/dashes so the aggressive patterns can match the full string cleanly.
+        # Remove all hyphens/dashes so the artifact patterns can match the full string cleanly.
         stripped = re.sub(r'[\-–—]', '', text)
-        
-        # 3. DESTRUCTIVE ARTIFACT RECOVERY (on hyphen-stripped text)
+
+        # 3. CONSERVATIVE ARTIFACT RECOVERY (on hyphen-stripped text)
+        # NOTE: every pattern here REQUIRES the two consonant slots to already be real
+        # Thai consonants ([ก-ฮ]{2}). We deliberately do NOT fabricate consonants from
+        # digits/latin glyphs — when the OCR reads a consonant slot as a number it means
+        # the model genuinely failed, and inventing a letter produced plausible-looking
+        # but wrong plates (e.g. '133327' -> '1-รร-327'). Better to return None and let
+        # the caller drop it.
         error_patterns = [
             # Fix leading 'เ' misread as '4'
-            (r'(?<![A-Za-zก-ฮ0-9])เ\s*([ก-ฮ]{2})\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])', 
+            (r'(?<![A-Za-zก-ฮ0-9])เ\s*([ก-ฮ]{2})\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])',
              lambda m: f"4-{m.group(1)}-{m.group(2)}"),
-            # Fix '8' read as 'B'
-            (r'(?<![A-Za-zก-ฮ0-9])([ก-ฮ]{2})\s*B\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])', 
+            # Fix '8' read as 'B' (between two real consonants and the number block)
+            (r'(?<![A-Za-zก-ฮ0-9])([ก-ฮ]{2})\s*B\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])',
              lambda m: f"{m.group(1)}-8-{m.group(2)}"),
             # Fix '1' read as 'l' or 'I'
-            (r'(?<![A-Za-zก-ฮ0-9])[lI|]\s*([ก-ฮ]{2})\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])', 
+            (r'(?<![A-Za-zก-ฮ0-9])[lI|]\s*([ก-ฮ]{2})\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])',
              lambda m: f"1-{m.group(1)}-{m.group(2)}"),
-            
-            # --- AGGRESSIVE OCR ARTIFACT RECOVERY ---
-            # New format: [1 digit] [2 ANY chars] [2-4 digits] — map middle 2 to Thai
-            (r'(?<![A-Za-zก-ฮ0-9])([1-9])\s*([A-Za-zก-ฮ0-9]{2})\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])', 
-             lambda m: f"{m.group(1)}-{LicensePlateValidator._map_to_thai(m.group(2))}-{m.group(3)}"),
-            # Old format: [2 ANY chars] [2-4 digits]
-            (r'(?<![A-Za-zก-ฮ0-9])([A-Za-zก-ฮ0-9]{2})\s*([1-9]\d{1,3})(?![A-Za-zก-ฮ0-9])', 
-             lambda m: f"{LicensePlateValidator._map_to_thai(m.group(1))}-{m.group(2)}"),
         ]
-        
+
         for pattern, correction in error_patterns:
             match = re.search(pattern, stripped)
             if match:
                 return correction(match)
-                
+
         return None
     
     @staticmethod
