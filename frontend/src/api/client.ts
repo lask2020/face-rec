@@ -421,6 +421,7 @@ export const trainingApi = {
     conf_max?: number;
     conf_min?: number;
     camera_id?: number;
+    search?: string;
   } = {}): Promise<TrainingSampleList> =>
     request('/training/plates', { params: params as Record<string, string | number | undefined | null> }),
 

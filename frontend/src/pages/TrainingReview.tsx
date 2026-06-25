@@ -516,6 +516,7 @@ export default function TrainingReview() {
   const [stats, setStats] = useState<TrainingStats | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
   const [confMax, setConfMax] = useState<string>('');
+  const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [exportCount, setExportCount] = useState<number | null>(null);
   const [showStats, setShowStats] = useState(false);
@@ -552,13 +553,14 @@ export default function TrainingReview() {
         limit: LIMIT,
         status: statusFilter || undefined,
         conf_max: confMax ? Number(confMax) : undefined,
+        search: search || undefined,
       });
       setSamples(res.items);
       setTotal(res.total);
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter, confMax]);
+  }, [page, statusFilter, confMax, search]);
 
   const loadStats = useCallback(async () => {
     const s = await trainingApi.stats();
@@ -1278,6 +1280,16 @@ export default function TrainingReview() {
 
       {/* Filters + bulk */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          placeholder="ค้นหาทะเบียน / กล้อง..."
+          style={{
+            padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
+            background: 'var(--bg-input)', color: 'var(--text)', fontSize: 13, width: 200,
+          }}
+        />
         <select
           value={statusFilter}
           onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}

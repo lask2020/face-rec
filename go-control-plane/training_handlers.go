@@ -177,6 +177,7 @@ func listTrainingSamples(c *fiber.Ctx) error {
 	confMaxStr := c.Query("conf_max", "")
 	confMinStr := c.Query("conf_min", "")
 	cameraID := c.Query("camera_id", "")
+	search := c.Query("search", "")
 
 	if page < 1 {
 		page = 1
@@ -202,6 +203,10 @@ func listTrainingSamples(c *fiber.Ctx) error {
 	}
 	if cameraID != "" {
 		query = query.Where("camera_id = ?", cameraID)
+	}
+	if search != "" {
+		like := "%" + strings.ToLower(search) + "%"
+		query = query.Where("LOWER(raw_text) LIKE ? OR LOWER(corrected_text) LIKE ? OR LOWER(camera_name) LIKE ?", like, like, like)
 	}
 
 	var total int64
