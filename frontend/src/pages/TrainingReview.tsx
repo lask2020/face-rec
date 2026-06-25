@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { trainingApi, modelApi, settingsApi, workersApi } from '../api/client';
-import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion, Worker, AIReviewResult } from '../api/client';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { trainingApi, modelApi, settingsApi, api } from '../api/client';
+import type { TrainingSample, TrainingStats, CharLabel, FinetuneStatus, ModelVersion, WorkerInfo, AIReviewResult } from '../api/client';
 
 const LIMIT = 20;
 
@@ -559,10 +559,8 @@ export default function TrainingReview() {
   const [roboflowKey, setRoboflowKey] = useState('');
   const [roboflowKeySaved, setRoboflowKeySaved] = useState(false);
   const [savingKey, setSavingKey] = useState(false);
-  const [workers, setWorkers] = useState<Worker[]>([]);
+  const [workers, setWorkers] = useState<WorkerInfo[]>([]);
   const [selectedWorker, setSelectedWorker] = useState<string>('');
-  const [renamingWorker, setRenamingWorker] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
   const logBoxRef = useRef<HTMLDivElement>(null);
   const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
   const [deployingVersion, setDeployingVersion] = useState<string | null>(null);
@@ -623,7 +621,7 @@ export default function TrainingReview() {
   }, []);
 
   useEffect(() => {
-    const load = () => workersApi.list().then((r) => setWorkers(r.workers)).catch(() => {});
+    const load = () => api.listWorkers().then((r) => setWorkers(r.workers)).catch(() => {});
     load();
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
@@ -1052,73 +1050,60 @@ export default function TrainingReview() {
           </a>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 220 }}>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>Train on worker</span>
-            {[{ id: '', name: '', uptime: '', avg_process_ms: 0, is_paused: false, cameras: [], connected_at: '' } as Worker, ...workers].map((w) => {
-              const isAll = w.id === '';
-              const isSelected = selectedWorker === w.id;
-              const isRenaming = renamingWorker === w.id && !isAll;
-              const disabled = finetune?.status === 'running';
-              return (
-                <div
-                  key={w.id || '__all'}
-                  onClick={() => !disabled && setSelectedWorker(w.id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '6px 10px', borderRadius: 7, cursor: disabled ? 'not-allowed' : 'pointer',
-                    border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
-                    background: isSelected ? 'var(--accent)' : 'var(--bg-input)',
-                    opacity: disabled ? 0.6 : 1,
-                    userSelect: 'none',
-                  }}
-                >
-                  {/* Radio dot */}
-                  <span style={{
-                    width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
-                    border: `2px solid ${isSelected ? '#fff' : 'var(--text-muted)'}`,
-                    background: isSelected ? '#fff' : 'transparent',
-                    display: 'inline-block',
-                  }} />
-
-                  {/* Label */}
-                  <span style={{ flex: 1, fontSize: 12, color: isSelected ? '#fff' : 'var(--text)' }}>
-                    {isRenaming ? (
-                      <input
-                        autoFocus
-                        value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onKeyDown={async (e) => {
-                          if (e.key === 'Enter') {
-                            await workersApi.rename(w.id, renameValue);
-                            setWorkers(ws => ws.map(x => x.id === w.id ? { ...x, name: renameValue } : x));
-                            setRenamingWorker(null);
-                          } else if (e.key === 'Escape') {
-                            setRenamingWorker(null);
-                          }
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{ background: 'transparent', border: 'none', outline: 'none', color: 'inherit', width: '100%', fontSize: 12 }}
-                      />
-                    ) : isAll ? (
-                      <>Auto-select <span style={{ opacity: 0.7, fontSize: 11 }}>({workers.length} connected)</span></>
-                    ) : (
-                      <>{w.name || w.id.slice(0, 8)}<span style={{ opacity: 0.7, marginLeft: 6, fontSize: 11 }}>{w.avg_process_ms.toFixed(0)}ms{w.is_paused ? ' ⏸' : ''}</span></>
-                    )}
-                  </span>
-
-                  {/* Rename button — only for real workers, not while renaming */}
-                  {!isAll && !isRenaming && (
-                    <button
-                      title="Rename"
-                      onClick={(e) => { e.stopPropagation(); setRenamingWorker(w.id); setRenameValue(w.name || ''); }}
-                      style={{
-                        background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px',
-                        fontSize: 11, opacity: 0.7, color: isSelected ? '#fff' : 'var(--text-muted)',
-                        lineHeight: 1, flexShrink: 0,
-                      }}
-                    >✏️</button>
-                  )}
-                </div>
+            {(() => {
+              // Only show online workers that can run training
+              const trainingWorkers = workers.filter(
+                (w) => w.is_online && (w.role === 'training' || w.role === 'both')
               );
-            })}
+              const rows: { key: string; name: string; label: React.ReactNode }[] = [
+                {
+                  key: '',
+                  name: '',
+                  label: <>Auto-select <span style={{ opacity: 0.7, fontSize: 11 }}>({trainingWorkers.length} connected)</span></>,
+                },
+                ...trainingWorkers.map((w) => ({
+                  key: w.name,
+                  name: w.name,
+                  label: (
+                    <>
+                      {w.display_name || w.name}
+                      <span style={{ opacity: 0.7, marginLeft: 6, fontSize: 11 }}>
+                        {w.avg_process_ms > 0 ? `${w.avg_process_ms.toFixed(0)}ms` : ''}
+                        {w.is_paused ? ' ⏸' : ''}
+                      </span>
+                    </>
+                  ),
+                })),
+              ];
+              const disabled = finetune?.status === 'running';
+              return rows.map(({ key, name, label }) => {
+                const isSelected = selectedWorker === name;
+                return (
+                  <div
+                    key={key || '__auto'}
+                    onClick={() => !disabled && setSelectedWorker(name)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '6px 10px', borderRadius: 7, cursor: disabled ? 'not-allowed' : 'pointer',
+                      border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                      background: isSelected ? 'var(--accent)' : 'var(--bg-input)',
+                      opacity: disabled ? 0.6 : 1,
+                      userSelect: 'none',
+                    }}
+                  >
+                    <span style={{
+                      width: 12, height: 12, borderRadius: '50%', flexShrink: 0,
+                      border: `2px solid ${isSelected ? '#fff' : 'var(--text-muted)'}`,
+                      background: isSelected ? '#fff' : 'transparent',
+                      display: 'inline-block',
+                    }} />
+                    <span style={{ flex: 1, fontSize: 12, color: isSelected ? '#fff' : 'var(--text)' }}>
+                      {label}
+                    </span>
+                  </div>
+                );
+              });
+            })()}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <input
