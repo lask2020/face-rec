@@ -668,7 +668,26 @@ func ImportSSCameras(c *fiber.Ctx) error {
 	})
 }
 
-// GetWorkers returns the list of active AI Workers and their assigned cameras.
+type workerCameraInfo struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+
+type WorkerInfo struct {
+	Name         string             `json:"name"`          // persistent key
+	DisplayName  string             `json:"display_name"`
+	SessionID    string             `json:"session_id,omitempty"`
+	Role         string             `json:"role"`
+	MaxCameras   int                `json:"max_cameras"`
+	ConnectedAt  string             `json:"connected_at,omitempty"`
+	Uptime       string             `json:"uptime,omitempty"`
+	Cameras      []workerCameraInfo `json:"cameras"`
+	AvgProcessMs float64            `json:"avg_process_ms"`
+	IsPaused     bool               `json:"is_paused"`
+	IsOnline     bool               `json:"is_online"`
+}
+
+// GetWorkers returns all known workers (online + offline) with their config and live state.
 func GetWorkers(c *fiber.Ctx) error {
 	activeWorkersMu.Lock()
 	workersCopy := make([]*AIWorkerSession, len(activeWorkers))
@@ -682,7 +701,6 @@ func GetWorkers(c *fiber.Ctx) error {
 	}
 	cameraToWorkerMu.Unlock()
 
-	// Load cameras to map IDs to Names
 	var cameras []Camera
 	DB.Find(&cameras)
 	cameraNames := make(map[uint]string)
@@ -690,55 +708,81 @@ func GetWorkers(c *fiber.Ctx) error {
 		cameraNames[cam.ID] = cam.Name
 	}
 
-	type WorkerCameraInfo struct {
-		ID   uint   `json:"id"`
-		Name string `json:"name"`
+	// Build live session index keyed by workerName
+	type liveInfo struct {
+		session      *AIWorkerSession
+		assignedCams []workerCameraInfo
+		avgProcessMs float64
+		isPaused     bool
 	}
-
-	type WorkerInfo struct {
-		ID           string             `json:"id"`
-		Name         string             `json:"name"`
-		ConnectedAt  string             `json:"connected_at"`
-		Uptime       string             `json:"uptime"`
-		Cameras      []WorkerCameraInfo `json:"cameras"`
-		AvgProcessMs float64            `json:"avg_process_ms"`
-		IsPaused     bool               `json:"is_paused"`
-	}
-
-	result := make([]WorkerInfo, 0)
+	liveByName := make(map[string]*liveInfo)
 	for _, w := range workersCopy {
-		assignedCams := make([]WorkerCameraInfo, 0)
-		for camID, workerID := range camMapCopy {
-			if workerID == w.id {
-				name, exists := cameraNames[camID]
-				if !exists {
+		cams := make([]workerCameraInfo, 0)
+		for camID, wID := range camMapCopy {
+			if wID == w.id {
+				name, ok := cameraNames[camID]
+				if !ok {
 					name = fmt.Sprintf("Camera %d", camID)
 				}
-				assignedCams = append(assignedCams, WorkerCameraInfo{
-					ID:   camID,
-					Name: name,
-				})
+				cams = append(cams, workerCameraInfo{ID: camID, Name: name})
 			}
 		}
-
-		uptime := time.Since(w.connectedAt).Truncate(time.Second).String()
-
 		w.mu.Lock()
-		avgProcessMs := w.avgProcessMs
-		isPaused := w.isPaused
+		avg := w.avgProcessMs
+		paused := w.isPaused
 		w.mu.Unlock()
+		liveByName[w.workerName] = &liveInfo{
+			session:      w,
+			assignedCams: cams,
+			avgProcessMs: avg,
+			isPaused:     paused,
+		}
+	}
 
-		workerName := getSettingValue("worker_name_" + w.id)
+	// Load all known worker configs from DB
+	var configs []AIWorker
+	DB.Find(&configs)
 
-		result = append(result, WorkerInfo{
-			ID:           w.id,
-			Name:         workerName,
-			ConnectedAt:  w.connectedAt.Format(time.RFC3339),
-			Uptime:       uptime,
-			Cameras:      assignedCams,
-			AvgProcessMs: avgProcessMs,
-			IsPaused:     isPaused,
-		})
+	// Add any online worker not yet in DB (auto-registered but not yet reflected)
+	configByName := make(map[string]AIWorker)
+	for _, cfg := range configs {
+		configByName[cfg.Name] = cfg
+	}
+	for _, w := range workersCopy {
+		if _, exists := configByName[w.workerName]; !exists {
+			w.mu.Lock()
+			configByName[w.workerName] = AIWorker{
+				Name: w.workerName, Role: w.role, MaxCameras: w.maxCameras, IsPaused: w.isPaused,
+			}
+			w.mu.Unlock()
+		}
+	}
+
+	result := make([]WorkerInfo, 0, len(configByName))
+	for name, cfg := range configByName {
+		role := cfg.Role
+		if role == "" {
+			role = "both"
+		}
+		info := WorkerInfo{
+			Name:        name,
+			DisplayName: cfg.DisplayName,
+			Role:        role,
+			MaxCameras:  cfg.MaxCameras,
+			IsPaused:    cfg.IsPaused,
+			IsOnline:    false,
+			Cameras:     []workerCameraInfo{},
+		}
+		if live, ok := liveByName[name]; ok {
+			info.IsOnline = true
+			info.IsPaused = live.isPaused
+			info.SessionID = live.session.id
+			info.ConnectedAt = live.session.connectedAt.Format(time.RFC3339)
+			info.Uptime = time.Since(live.session.connectedAt).Truncate(time.Second).String()
+			info.Cameras = live.assignedCams
+			info.AvgProcessMs = live.avgProcessMs
+		}
+		result = append(result, info)
 	}
 
 	return c.JSON(fiber.Map{
@@ -747,25 +791,87 @@ func GetWorkers(c *fiber.Ctx) error {
 	})
 }
 
-func RenameWorkerHandler(c *fiber.Ctx) error {
-	id := c.Params("id")
+// UpdateWorkerConfigHandler updates persistent config for a named worker.
+// PATCH /api/workers/:name/config — body: { display_name, role, max_cameras }
+func UpdateWorkerConfigHandler(c *fiber.Ctx) error {
+	name := c.Params("name")
 	var body struct {
-		Name string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Role        string `json:"role"`
+		MaxCameras  int    `json:"max_cameras"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid body"})
 	}
-	putSettingValue("worker_name_"+id, body.Name)
-	return c.JSON(fiber.Map{"id": id, "name": body.Name})
+	if body.Role != "" && body.Role != "inference" && body.Role != "training" && body.Role != "both" {
+		return c.Status(400).JSON(fiber.Map{"error": "role must be inference | training | both"})
+	}
+	if body.MaxCameras < 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "max_cameras must be >= 0"})
+	}
+
+	var config AIWorker
+	if err := DB.FirstOrCreate(&config, AIWorker{Name: name}).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "db error"})
+	}
+
+	updates := map[string]interface{}{
+		"display_name": body.DisplayName,
+		"max_cameras":  body.MaxCameras,
+	}
+	if body.Role != "" {
+		updates["role"] = body.Role
+	}
+	if err := DB.Model(&config).Updates(updates).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "db update error"})
+	}
+
+	// Apply to live session immediately
+	activeWorkersMu.Lock()
+	for _, w := range activeWorkers {
+		if w.workerName == name {
+			w.mu.Lock()
+			if body.Role != "" {
+				w.role = body.Role
+			}
+			w.maxCameras = body.MaxCameras
+			w.mu.Unlock()
+			break
+		}
+	}
+	activeWorkersMu.Unlock()
+	rebalanceWorkers()
+
+	DB.First(&config, "name = ?", name)
+	return c.JSON(config)
 }
 
-// ToggleWorkerPauseHandler toggles the pause/resume state of an AI worker session.
+// ToggleWorkerPauseHandler toggles pause state by persistent worker name.
 func ToggleWorkerPauseHandler(c *fiber.Ctx) error {
-	id := c.Params("id")
-	isPaused, err := ToggleWorkerPause(id)
+	name := c.Params("name")
+	isPaused, err := ToggleWorkerPause(name)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"id": id, "is_paused": isPaused})
+	return c.JSON(fiber.Map{"name": name, "is_paused": isPaused})
+}
+
+// DeleteWorkerConfigHandler removes a worker's saved config (only if offline).
+func DeleteWorkerConfigHandler(c *fiber.Ctx) error {
+	name := c.Params("name")
+	// Don't delete config of a currently connected worker
+	activeWorkersMu.Lock()
+	for _, w := range activeWorkers {
+		if w.workerName == name {
+			activeWorkersMu.Unlock()
+			return c.Status(409).JSON(fiber.Map{"error": "worker is currently online — disconnect it first"})
+		}
+	}
+	activeWorkersMu.Unlock()
+
+	if err := DB.Delete(&AIWorker{}, "name = ?", name).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "db error"})
+	}
+	return c.JSON(fiber.Map{"deleted": name})
 }
 

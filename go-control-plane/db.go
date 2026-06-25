@@ -124,6 +124,18 @@ type AppSetting struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// AIWorker stores persistent configuration for a named AI worker process.
+// Workers identify themselves via the WORKER_NAME env var on connect.
+type AIWorker struct {
+	Name        string    `gorm:"primaryKey" json:"name"`
+	DisplayName string    `gorm:"size:255;default:''" json:"display_name"`
+	Role        string    `gorm:"size:16;default:'both'" json:"role"`        // "inference" | "training" | "both"
+	MaxCameras  int       `gorm:"default:0" json:"max_cameras"`              // 0 = unlimited
+	IsPaused    bool      `gorm:"default:false" json:"is_paused"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 func InitDatabase() {
 	user := os.Getenv("POSTGRES_USER")
 	pass := os.Getenv("POSTGRES_PASSWORD")
@@ -156,7 +168,7 @@ func InitDatabase() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	err = DB.AutoMigrate(&Person{}, &PersonFace{}, &Camera{}, &DetectionLog{}, &PlateDetectionLog{}, &PlateTrainingSample{}, &AppSetting{})
+	err = DB.AutoMigrate(&Person{}, &PersonFace{}, &Camera{}, &DetectionLog{}, &PlateDetectionLog{}, &PlateTrainingSample{}, &AppSetting{}, &AIWorker{})
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}

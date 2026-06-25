@@ -643,7 +643,7 @@ func zipDirectory(src, dst string) error {
 	})
 }
 
-// BroadcastFinetuneTask sends a start_finetune task to all connected workers.
+// BroadcastFinetuneTask sends a start_finetune task to all training/both workers.
 // Returns the number of workers that received it.
 func BroadcastFinetuneTask(task *facerec.FrameTask) int {
 	activeWorkersMu.Lock()
@@ -653,6 +653,12 @@ func BroadcastFinetuneTask(task *facerec.FrameTask) int {
 
 	delivered := 0
 	for _, w := range ws {
+		w.mu.Lock()
+		role := w.role
+		w.mu.Unlock()
+		if role != "training" && role != "both" {
+			continue
+		}
 		if w.sendBlocking(task, 10*time.Second) {
 			delivered++
 		}
@@ -660,16 +666,16 @@ func BroadcastFinetuneTask(task *facerec.FrameTask) int {
 	return delivered
 }
 
-// SendFinetuneToWorker sends a finetune task to a specific worker by ID.
+// SendFinetuneToWorker sends a finetune task to a specific worker by persistent name.
 // Returns true if the worker was found and task was delivered.
-func SendFinetuneToWorker(workerID string, task *facerec.FrameTask) bool {
+func SendFinetuneToWorker(workerName string, task *facerec.FrameTask) bool {
 	activeWorkersMu.Lock()
 	ws := make([]*AIWorkerSession, len(activeWorkers))
 	copy(ws, activeWorkers)
 	activeWorkersMu.Unlock()
 
 	for _, w := range ws {
-		if w.id == workerID {
+		if w.workerName == workerName {
 			return w.sendBlocking(task, 10*time.Second)
 		}
 	}
@@ -776,10 +782,15 @@ func resolveModelsDir() string {
 
 func startFinetune(c *fiber.Ctx) error {
 	var body struct {
-		Epochs   int    `json:"epochs"`
-		WorkerID string `json:"worker_id"`
+		Epochs     int    `json:"epochs"`
+		WorkerID   string `json:"worker_id"`    // deprecated: use worker_name
+		WorkerName string `json:"worker_name"`  // persistent worker name
 	}
 	_ = c.BodyParser(&body)
+	// Support legacy worker_id field as fallback
+	if body.WorkerName == "" && body.WorkerID != "" {
+		body.WorkerName = body.WorkerID
+	}
 
 	finetuneJob.mu.Lock()
 	if finetuneJob.Status == "running" {
@@ -862,29 +873,28 @@ func startFinetune(c *fiber.Ctx) error {
 			RoboflowApiKey:       getSettingValue("roboflow_api_key"),
 		}
 		var delivered int
-		if body.WorkerID != "" {
-			if SendFinetuneToWorker(body.WorkerID, task) {
+		if body.WorkerName != "" {
+			if SendFinetuneToWorker(body.WorkerName, task) {
 				delivered = 1
 			} else {
-				finetuneJob.setError(fmt.Sprintf("worker %s not found or not connected", body.WorkerID))
+				finetuneJob.setError(fmt.Sprintf("worker %s not found or not connected", body.WorkerName))
 				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
 				return
 			}
 		} else {
-			// No specific worker requested — pick the first available worker.
-			// Broadcasting to all workers would cause each to train independently
-			// and race on activateVersion, so we always train on exactly one worker.
-			w := getNextWorker()
+			// No specific worker requested — auto-select a training/both worker.
+			// We always train on exactly one worker to avoid racing on activateVersion.
+			w := getTrainingWorker()
 			if w == nil {
-				finetuneJob.setError("no AI workers connected — cannot start training")
+				finetuneJob.setError("no training-capable workers connected — cannot start training")
 				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
 				return
 			}
 			if w.sendBlocking(task, 10*time.Second) {
 				delivered = 1
-				finetuneJob.appendLog(fmt.Sprintf("No worker specified — auto-selected worker %s", w.id))
+				finetuneJob.appendLog(fmt.Sprintf("Auto-selected worker: %s", w.workerName))
 			} else {
-				finetuneJob.setError(fmt.Sprintf("worker %s queue full — cannot start training", w.id))
+				finetuneJob.setError(fmt.Sprintf("worker %s queue full — cannot start training", w.workerName))
 				S3Client.RemoveObject(context.Background(), SnapshotsBucket, s3Key, minio.RemoveObjectOptions{})
 				return
 			}

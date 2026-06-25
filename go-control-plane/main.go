@@ -89,10 +89,11 @@ func main() {
 	api.Put("/models/upload/:version/:filename", uploadModelFile)
 	api.Post("/models/push", pushModelsHandler)
 
-	// Workers
+	// Workers — identified by persistent name, not session UUID
 	api.Get("/workers", GetWorkers)
-	api.Post("/workers/:id/toggle-pause", ToggleWorkerPauseHandler)
-	api.Put("/workers/:id/name", RenameWorkerHandler)
+	api.Post("/workers/:name/toggle-pause", ToggleWorkerPauseHandler)
+	api.Patch("/workers/:name/config", UpdateWorkerConfigHandler)
+	api.Delete("/workers/:name", DeleteWorkerConfigHandler)
 
 	// Surveillance Station
 	api.Post("/surveillance-station/test", TestSSConnection)

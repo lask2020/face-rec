@@ -29,6 +29,7 @@ message InferenceResult {
   repeated PlateDetection plate_detections = 5;
   repeated PlateTrainingFrame plate_training_frames = 6;
   FinetuneProgress finetune_progress = 7;
+  string worker_name = 8;  // persistent worker identity (set via WORKER_NAME env var)
 }
 
 message FinetuneProgress {

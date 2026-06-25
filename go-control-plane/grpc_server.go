@@ -60,7 +60,10 @@ func InvalidateDetectModeCache(cameraID uint) {
 
 type AIWorkerSession struct {
 	stream       facerec.FaceInferenceService_ProcessStreamServer
-	id           string
+	id           string    // ephemeral session UUID
+	workerName   string    // persistent name key (from AIWorker.Name in DB)
+	role         string    // "inference" | "training" | "both"
+	maxCameras   int       // 0 = unlimited
 	connectedAt  time.Time
 	avgProcessMs float64
 	isPaused     bool
@@ -191,22 +194,41 @@ func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_
 	}
 
 	go session.senderLoop()
-	registerWorker(session)
 	defer func() {
-		deregisterWorker(session)
+		if session.workerName != "" {
+			deregisterWorker(session)
+		}
 		session.closeSendCh()
 	}()
 
-	log.Printf("[gRPC] New AI worker connected: %s", session.id)
+	log.Printf("[gRPC] New AI worker session: %s (waiting for identification)", session.id)
 
+	registered := false
 	for {
 		result, err := stream.Recv()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			log.Printf("[gRPC] AI worker disconnected: %s, error: %v", session.id, err)
+			log.Printf("[gRPC] AI worker disconnected: %s (%s), error: %v", session.workerName, session.id, err)
 			break
+		}
+
+		// Identify and register on first message
+		if !registered {
+			name := result.WorkerName
+			if name == "" {
+				name = "worker-" + session.id[:8]
+			}
+			session.workerName = name
+			registerWorker(session)
+			registered = true
+			log.Printf("[gRPC] Worker identified: %s (session: %s)", name, session.id)
+		}
+
+		// "hello" is a pure identification message — no payload to process
+		if result.TaskId == "hello" {
+			continue
 		}
 
 		// Update average processing time metrics
@@ -228,17 +250,27 @@ func (s *FaceInferenceServer) ProcessStream(stream facerec.FaceInferenceService_
 }
 
 func registerWorker(w *AIWorkerSession) {
-	// Restore persisted pause state so reconnecting workers remember their setting.
-	if getSettingValue("worker_paused_"+w.id) == "true" {
-		w.mu.Lock()
-		w.isPaused = true
-		w.mu.Unlock()
+	// Load or create persistent config by worker name.
+	var config AIWorker
+	if err := DB.FirstOrCreate(&config, AIWorker{Name: w.workerName}).Error; err != nil {
+		log.Printf("[Worker] DB error for %s: %v — using defaults", w.workerName, err)
+		config = AIWorker{Name: w.workerName, Role: "both", MaxCameras: 0, IsPaused: false}
 	}
+	if config.Role == "" {
+		config.Role = "both"
+	}
+
+	w.mu.Lock()
+	w.isPaused = config.IsPaused
+	w.role = config.Role
+	w.maxCameras = config.MaxCameras
+	w.mu.Unlock()
 
 	activeWorkersMu.Lock()
 	activeWorkers = append(activeWorkers, w)
 	activeWorkersMu.Unlock()
 
+	log.Printf("[Worker] Registered: %s (role=%s, maxCameras=%d, paused=%v)", w.workerName, config.Role, config.MaxCameras, config.IsPaused)
 	rebalanceWorkers()
 }
 
@@ -288,16 +320,25 @@ func BroadcastReloadModels() int {
 
 func rebalanceWorkers() {
 	activeWorkersMu.Lock()
-	numWorkers := 0
+	// Build per-worker limits: only inference/both workers receive cameras.
+	// workerLimit maps session-id → effective camera cap (0 = unlimited → use balancer target).
+	type workerMeta struct {
+		maxCameras int
+	}
+	eligible := make(map[string]workerMeta)
 	for _, w := range activeWorkers {
 		w.mu.Lock()
-		if !w.isPaused {
-			numWorkers++
-		}
+		paused := w.isPaused
+		role := w.role
+		maxCam := w.maxCameras
 		w.mu.Unlock()
+		if !paused && (role == "inference" || role == "both") {
+			eligible[w.id] = workerMeta{maxCameras: maxCam}
+		}
 	}
 	activeWorkersMu.Unlock()
 
+	numWorkers := len(eligible)
 	if numWorkers == 0 {
 		cameraToWorkerMu.Lock()
 		for k := range cameraToWorker {
@@ -319,28 +360,37 @@ func rebalanceWorkers() {
 		return
 	}
 
-	// Target limit (ceiling division C / N)
-	targetLimit := (numCameras + numWorkers - 1) / numWorkers
-	if targetLimit < 1 {
-		targetLimit = 1
+	// Default balance target (ceiling division)
+	balanceTarget := (numCameras + numWorkers - 1) / numWorkers
+	if balanceTarget < 1 {
+		balanceTarget = 1
 	}
 
-	log.Printf("[Rebalance] Rebalancing %d cameras across %d active workers (target limit: %d per worker)", numCameras, numWorkers, targetLimit)
+	log.Printf("[Rebalance] %d cameras across %d inference workers (balance target: %d/worker)", numCameras, numWorkers, balanceTarget)
 
-	// Group assigned cameras by worker ID
+	// Remove cameras assigned to ineligible (paused / training-only / disconnected) workers
+	for camID, wID := range cameraToWorker {
+		if _, ok := eligible[wID]; !ok {
+			delete(cameraToWorker, camID)
+		}
+	}
+
+	// Enforce per-worker cap: min(balanceTarget, maxCameras) if maxCameras > 0
 	workerAssignments := make(map[string][]uint)
 	for camID, wID := range cameraToWorker {
 		workerAssignments[wID] = append(workerAssignments[wID], camID)
 	}
-
 	for wID, camIDs := range workerAssignments {
-		if len(camIDs) > targetLimit {
-			numToRemove := len(camIDs) - targetLimit
-			log.Printf("[Rebalance] Worker %s has %d cameras (exceeds limit %d). Unassigning %d camera(s)...", wID, len(camIDs), targetLimit, numToRemove)
-			for i := 0; i < numToRemove; i++ {
-				camToRemove := camIDs[i]
-				delete(cameraToWorker, camToRemove)
-				log.Printf("[Rebalance] Unassigned Camera %d from Worker %s", camToRemove, wID)
+		meta := eligible[wID]
+		limit := balanceTarget
+		if meta.maxCameras > 0 && meta.maxCameras < limit {
+			limit = meta.maxCameras
+		}
+		if len(camIDs) > limit {
+			excess := len(camIDs) - limit
+			log.Printf("[Rebalance] Worker %s exceeds limit %d (%d cams). Releasing %d.", wID, limit, len(camIDs), excess)
+			for i := 0; i < excess; i++ {
+				delete(cameraToWorker, camIDs[i])
 			}
 		}
 	}
@@ -357,56 +407,54 @@ func getWorkerForCamera(cameraID uint) *AIWorkerSession {
 	cameraToWorkerMu.Lock()
 	defer cameraToWorkerMu.Unlock()
 
-	// Check if this camera is already assigned to an active, non-paused worker
+	// isEligible: non-paused inference/both worker
+	isEligible := func(w *AIWorkerSession) bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return !w.isPaused && (w.role == "inference" || w.role == "both")
+	}
+
+	// Check if this camera already has a valid sticky assignment
 	if workerID, exists := cameraToWorker[cameraID]; exists {
-		// Verify if the assigned worker is still active and not paused
 		for _, w := range activeWorkers {
-			w.mu.Lock()
-			paused := w.isPaused
-			w.mu.Unlock()
-			if w.id == workerID && !paused {
+			if w.id == workerID && isEligible(w) {
 				return w
 			}
 		}
-		// If worker is no longer active or is paused, remove the stale/paused mapping
 		delete(cameraToWorker, cameraID)
 	}
 
-	// Calculate current load per active, non-paused worker
+	// Count current load on each eligible worker
 	workerLoad := make(map[string]int)
-	nonPausedWorkersExist := false
 	for _, w := range activeWorkers {
-		w.mu.Lock()
-		paused := w.isPaused
-		w.mu.Unlock()
-		if !paused {
+		if isEligible(w) {
 			workerLoad[w.id] = 0
-			nonPausedWorkersExist = true
 		}
 	}
-
-	if !nonPausedWorkersExist {
+	if len(workerLoad) == 0 {
 		return nil
 	}
-
 	for _, wID := range cameraToWorker {
 		if _, ok := workerLoad[wID]; ok {
 			workerLoad[wID]++
 		}
 	}
 
-	// Find the worker with the minimum load
+	// Pick eligible worker with minimum load, respecting maxCameras
 	var bestWorker *AIWorkerSession
-	minLoad := int(^uint(0) >> 1) // Max int
+	minLoad := int(^uint(0) >> 1)
 
 	for _, w := range activeWorkers {
-		w.mu.Lock()
-		paused := w.isPaused
-		w.mu.Unlock()
-		if paused {
+		if !isEligible(w) {
 			continue
 		}
+		w.mu.Lock()
+		maxCam := w.maxCameras
+		w.mu.Unlock()
 		load := workerLoad[w.id]
+		if maxCam > 0 && load >= maxCam {
+			continue // at capacity
+		}
 		if load < minLoad {
 			minLoad = load
 			bestWorker = w
@@ -415,25 +463,27 @@ func getWorkerForCamera(cameraID uint) *AIWorkerSession {
 
 	if bestWorker != nil {
 		cameraToWorker[cameraID] = bestWorker.id
-		log.Printf("[Dispatcher] Assigned Camera %d to Worker %s (current load: %d cameras)", cameraID, bestWorker.id, minLoad+1)
+		log.Printf("[Dispatcher] Assigned Camera %d to Worker %s/%s (load: %d)", cameraID, bestWorker.workerName, bestWorker.id, minLoad+1)
 	}
 
 	return bestWorker
 }
 
+// getNextWorker returns the next available inference/both worker (round-robin).
+// Used for face registration tasks.
 func getNextWorker() *AIWorkerSession {
 	activeWorkersMu.Lock()
 	defer activeWorkersMu.Unlock()
 	if len(activeWorkers) == 0 {
 		return nil
 	}
-	// Filter to non-paused workers
 	available := make([]*AIWorkerSession, 0)
 	for _, w := range activeWorkers {
 		w.mu.Lock()
 		paused := w.isPaused
+		role := w.role
 		w.mu.Unlock()
-		if !paused {
+		if !paused && (role == "inference" || role == "both") {
 			available = append(available, w)
 		}
 	}
@@ -445,48 +495,66 @@ func getNextWorker() *AIWorkerSession {
 	return worker
 }
 
-func ToggleWorkerPause(workerID string) (bool, error) {
+// getTrainingWorker returns the first available training/both worker.
+// Used for auto-selecting a worker when no specific worker is requested for finetune.
+func getTrainingWorker() *AIWorkerSession {
 	activeWorkersMu.Lock()
-	var targetWorker *AIWorkerSession
+	defer activeWorkersMu.Unlock()
 	for _, w := range activeWorkers {
-		if w.id == workerID {
-			targetWorker = w
+		w.mu.Lock()
+		paused := w.isPaused
+		role := w.role
+		w.mu.Unlock()
+		if !paused && (role == "training" || role == "both") {
+			return w
+		}
+	}
+	return nil
+}
+
+// ToggleWorkerPause toggles the pause state for a worker identified by persistent name.
+// Updates the DB record and the live session (if connected). Returns new paused state.
+func ToggleWorkerPause(workerName string) (bool, error) {
+	// Load or create DB config
+	var config AIWorker
+	if err := DB.FirstOrCreate(&config, AIWorker{Name: workerName}).Error; err != nil {
+		return false, fmt.Errorf("db error: %v", err)
+	}
+
+	newPaused := !config.IsPaused
+	if err := DB.Model(&config).Update("is_paused", newPaused).Error; err != nil {
+		return false, fmt.Errorf("db update error: %v", err)
+	}
+
+	// Apply to live session if connected
+	activeWorkersMu.Lock()
+	var session *AIWorkerSession
+	for _, w := range activeWorkers {
+		if w.workerName == workerName {
+			session = w
 			break
 		}
 	}
 	activeWorkersMu.Unlock()
 
-	if targetWorker == nil {
-		return false, fmt.Errorf("worker not found")
-	}
+	if session != nil {
+		session.mu.Lock()
+		session.isPaused = newPaused
+		session.mu.Unlock()
 
-	targetWorker.mu.Lock()
-	targetWorker.isPaused = !targetWorker.isPaused
-	newPausedState := targetWorker.isPaused
-	targetWorker.mu.Unlock()
-
-	// Persist pause state so it survives worker reconnects.
-	val := "false"
-	if newPausedState {
-		val = "true"
-	}
-	putSettingValue("worker_paused_"+workerID, val)
-
-	// If paused, clear its camera assignments so they can be re-dispatched
-	if newPausedState {
-		cameraToWorkerMu.Lock()
-		for camID, wID := range cameraToWorker {
-			if wID == workerID {
-				delete(cameraToWorker, camID)
+		if newPaused {
+			cameraToWorkerMu.Lock()
+			for camID, wID := range cameraToWorker {
+				if wID == session.id {
+					delete(cameraToWorker, camID)
+				}
 			}
+			cameraToWorkerMu.Unlock()
 		}
-		cameraToWorkerMu.Unlock()
+		rebalanceWorkers()
 	}
 
-	// Rebalance active cameras across non-paused workers
-	rebalanceWorkers()
-
-	return newPausedState, nil
+	return newPaused, nil
 }
 
 // SendRegistrationTask sends a face image to a worker for embedding extraction

@@ -146,6 +146,7 @@ type InferenceResult struct {
 	PlateDetections     []*PlateDetection      `protobuf:"bytes,5,rep,name=plate_detections,json=plateDetections,proto3" json:"plate_detections,omitempty"`
 	PlateTrainingFrames []*PlateTrainingFrame  `protobuf:"bytes,6,rep,name=plate_training_frames,json=plateTrainingFrames,proto3" json:"plate_training_frames,omitempty"`
 	FinetuneProgress    *FinetuneProgress      `protobuf:"bytes,7,opt,name=finetune_progress,json=finetuneProgress,proto3" json:"finetune_progress,omitempty"`
+	WorkerName          string                 `protobuf:"bytes,8,opt,name=worker_name,json=workerName,proto3" json:"worker_name,omitempty"` // persistent worker identity (set via WORKER_NAME env var)
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -227,6 +228,13 @@ func (x *InferenceResult) GetFinetuneProgress() *FinetuneProgress {
 		return x.FinetuneProgress
 	}
 	return nil
+}
+
+func (x *InferenceResult) GetWorkerName() string {
+	if x != nil {
+		return x.WorkerName
+	}
+	return ""
 }
 
 type FinetuneProgress struct {
@@ -576,7 +584,7 @@ const file_facerec_proto_rawDesc = "" +
 	"\x0ffinetune_epochs\x18\b \x01(\x05R\x0efinetuneEpochs\x12#\n" +
 	"\rstop_finetune\x18\t \x01(\bR\fstopFinetune\x12(\n" +
 	"\x10roboflow_api_key\x18\n" +
-	" \x01(\tR\x0eroboflowApiKey\"\x88\x03\n" +
+	" \x01(\tR\x0eroboflowApiKey\"\xa9\x03\n" +
 	"\x0fInferenceResult\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x122\n" +
 	"\n" +
@@ -586,7 +594,9 @@ const file_facerec_proto_rawDesc = "" +
 	"\x0fprocess_time_ms\x18\x04 \x01(\x02R\rprocessTimeMs\x12B\n" +
 	"\x10plate_detections\x18\x05 \x03(\v2\x17.facerec.PlateDetectionR\x0fplateDetections\x12O\n" +
 	"\x15plate_training_frames\x18\x06 \x03(\v2\x1b.facerec.PlateTrainingFrameR\x13plateTrainingFrames\x12F\n" +
-	"\x11finetune_progress\x18\a \x01(\v2\x19.facerec.FinetuneProgressR\x10finetuneProgress\"\xbe\x01\n" +
+	"\x11finetune_progress\x18\a \x01(\v2\x19.facerec.FinetuneProgressR\x10finetuneProgress\x12\x1f\n" +
+	"\vworker_name\x18\b \x01(\tR\n" +
+	"workerName\"\xbe\x01\n" +
 	"\x10FinetuneProgress\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x14\n" +
 	"\x05epoch\x18\x02 \x01(\x05R\x05epoch\x12\x16\n" +

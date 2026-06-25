@@ -410,7 +410,8 @@ export interface AIReviewResult {
   id: number;
   suggestion: 'approve' | 'reject' | 'error';
   corrected_text: string | null;
-  corrected_labels: CharLabel[] | null;
+  corrected_classes: string[] | null;  // replaces class_name on existing boxes (positions unchanged)
+  new_boxes: CharLabel[] | null;       // genuinely new boxes with AI-estimated coords
   reason: string;
 }
 

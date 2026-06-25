@@ -55,7 +55,7 @@ type geminiResponse struct {
 	} `json:"error"`
 }
 
-// AICharLabel is the per-character bbox that Gemini returns.
+// AICharLabel is a NEW bounding box that Gemini detected (missing from OCR).
 // Matches the char_labels JSON schema stored in PlateTrainingSample.CharLabels.
 type AICharLabel struct {
 	ClassName  string  `json:"class_name"`
@@ -64,6 +64,13 @@ type AICharLabel struct {
 	BW         float64 `json:"bw"`
 	BH         float64 `json:"bh"`
 	Confidence float64 `json:"confidence"`
+}
+
+// AIReviewLabel is what callGeminiVision returns — corrected class names for
+// existing boxes (keep positions) + new boxes that were missed entirely.
+type AIReviewLabel struct {
+	CorrectedClasses []string     // same length as input char_labels; nil = unchanged
+	NewBoxes         []AICharLabel // genuinely missing characters with AI-estimated coords
 }
 
 // charLabelInput is used only for building the prompt.
@@ -81,7 +88,7 @@ type charLabelInput struct {
 func callGeminiVision(apiKey, rawText, charLabelsJSON string, imageB64 string) (
 	suggestion string,
 	correctedText *string,
-	correctedLabels []AICharLabel,
+	labels *AIReviewLabel,
 	reason string,
 	err error,
 ) {
@@ -95,31 +102,30 @@ The OCR system detected: "%s"
 
 Current character bounding boxes (%d boxes), sorted left→right:
 %s
-
-Coordinate system: YOLO-normalized (0.0–1.0) relative to the full image.
-  cx, cy = center of box  |  bw, bh = width and height of box
-  cx=0 is left edge, cx=1 is right edge, cy=0 is top, cy=1 is bottom
+IMPORTANT: The bounding box POSITIONS above are accurate (from the real detector).
+Do NOT change any cx/cy/bw/bh values for these existing boxes.
 
 Valid class names:
 - Digits: 0 1 2 3 4 5 6 7 8 9
 - Thai consonants (exact Thai char): ก ข ค ฆ ง จ ฉ ช ซ ฌ ญ ฎ ฏ ฐ ฑ ฒ ณ ด ต ถ ท ธ น บ ป ผ ฝ พ ฟ ภ ม ย ร ล ว ศ ษ ส ห ฬ อ ฮ
 - Province codes: ACR ATG AYA BKK BKN BRM CBI CCO CMI CNT CPM CPN CRI CTI KBI KKN KPT KRI KSN LEI LPG LPN LRI MDH MKM NAN NBI NBP NKI NMA NPM NPT NRT NSN NST NWT NYK PBI PCT PKN PKT PLG PLK PNA PNB PRE PRI PTN PTE PYO RBR RET RNG RYG SBR SKA SKM SKN SKW SNI SNK SPB SPK SRI SRN SSK STI STN TAK TRG TRT UBN UDN UTI UTT YLA YST
 
+Coordinate system for new_boxes only: YOLO-normalized (0.0–1.0).
+  cx, cy = center  |  bw, bh = size  |  cx=0 left, cx=1 right
+
 Your tasks:
 1. Look at the plate image carefully
-2. Return ALL character boxes (left→right order):
-   - For EXISTING boxes: correct the class_name if wrong; adjust cx/cy/bw/bh if clearly misaligned
-   - For MISSING characters (not detected by OCR): ADD a new box with accurate cx/cy/bw/bh
-   - Set confidence=1.0 for boxes you are certain about, 0.7 for uncertain
-3. Suggest "approve" if the plate is readable, "reject" if too blurry/unreadable
+2. For each existing box (left→right), correct the class_name if wrong → put in "corrected_classes" (must have exactly %d items)
+3. If there are characters in the image NOT covered by any existing box → add them in "new_boxes" with estimated coordinates
+4. Suggest "approve" if readable, "reject" if too blurry/unreadable
 
-Respond ONLY with valid JSON (no markdown), exactly:
-{"suggestion":"approve","corrected_text":"2กท-2459","corrected_labels":[{"class_name":"2","cx":0.07,"cy":0.50,"bw":0.11,"bh":0.75,"confidence":1.0},...],"reason":"brief reason"}
+Respond ONLY with valid JSON (no markdown):
+{"suggestion":"approve","corrected_text":"2กท-2459","corrected_classes":["2","ก","ท","2","4","5","9"],"new_boxes":[],"reason":"brief reason"}
 
 Rules:
-- corrected_labels must be sorted left→right by cx
-- If you cannot read the plate, set suggestion="reject" and corrected_labels=null
-- corrected_text should be the assembled plate string you see in the image`, rawText, len(existing), charSummary)
+- corrected_classes MUST have exactly %d items (one per existing box, same order)
+- new_boxes is [] when no characters are missing
+- If unreadable: suggestion="reject", corrected_classes=null, new_boxes=null`, rawText, len(existing), charSummary, len(existing), len(existing))
 
 	reqBody := geminiRequest{
 		Contents: []geminiContent{
@@ -174,29 +180,36 @@ Rules:
 	text := strings.TrimSpace(gemResp.Candidates[0].Content.Parts[0].Text)
 
 	var parsed struct {
-		Suggestion      string        `json:"suggestion"`
-		CorrectedText   *string       `json:"corrected_text"`
-		CorrectedLabels []AICharLabel `json:"corrected_labels"`
-		Reason          string        `json:"reason"`
+		Suggestion       string        `json:"suggestion"`
+		CorrectedText    *string       `json:"corrected_text"`
+		CorrectedClasses []string      `json:"corrected_classes"`
+		NewBoxes         []AICharLabel `json:"new_boxes"`
+		Reason           string        `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
 		return "", nil, nil, "", fmt.Errorf("parse result JSON: %w, raw: %s", err, text)
 	}
 
-	// Sanity-check coordinates — discard any label with out-of-range values.
-	var valid []AICharLabel
-	for _, l := range parsed.CorrectedLabels {
-		if l.CX >= 0 && l.CX <= 1 && l.CY >= 0 && l.CY <= 1 &&
-			l.BW > 0 && l.BW <= 1 && l.BH > 0 && l.BH <= 1 &&
-			l.ClassName != "" {
-			if l.Confidence == 0 {
-				l.Confidence = 1.0
+	// Only accept corrected_classes if count matches existing boxes.
+	var result *AIReviewLabel
+	if len(parsed.CorrectedClasses) == len(existing) || len(parsed.NewBoxes) > 0 {
+		result = &AIReviewLabel{}
+		if len(parsed.CorrectedClasses) == len(existing) {
+			result.CorrectedClasses = parsed.CorrectedClasses
+		}
+		// Sanity-check new box coordinates.
+		for _, b := range parsed.NewBoxes {
+			if b.CX >= 0 && b.CX <= 1 && b.CY >= 0 && b.CY <= 1 &&
+				b.BW > 0 && b.BW <= 1 && b.BH > 0 && b.BH <= 1 && b.ClassName != "" {
+				if b.Confidence == 0 {
+					b.Confidence = 0.8
+				}
+				result.NewBoxes = append(result.NewBoxes, b)
 			}
-			valid = append(valid, l)
 		}
 	}
 
-	return parsed.Suggestion, parsed.CorrectedText, valid, parsed.Reason, nil
+	return parsed.Suggestion, parsed.CorrectedText, result, parsed.Reason, nil
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -222,11 +235,12 @@ func buildCharSummary(labels []charLabelInput) string {
 // ── REST Handler ───────────────────────────────────────────────────────────────
 
 type AIReviewResult struct {
-	ID              uint          `json:"id"`
-	Suggestion      string        `json:"suggestion"` // "approve" | "reject" | "error"
-	CorrectedText   *string       `json:"corrected_text"`
-	CorrectedLabels []AICharLabel `json:"corrected_labels"` // nil if unavailable
-	Reason          string        `json:"reason"`
+	ID               uint          `json:"id"`
+	Suggestion       string        `json:"suggestion"`        // "approve" | "reject" | "error"
+	CorrectedText    *string       `json:"corrected_text"`
+	CorrectedClasses []string      `json:"corrected_classes"` // replaces class_name of existing boxes (positions unchanged)
+	NewBoxes         []AICharLabel `json:"new_boxes"`         // newly detected missing chars with AI-estimated coords
+	Reason           string        `json:"reason"`
 }
 
 func aiReviewTrainingSamples(c *fiber.Ctx) error {
@@ -287,15 +301,18 @@ func aiReviewTrainingSamples(c *fiber.Ctx) error {
 			charLabels = "[]"
 		}
 
-		suggestion, correctedText, correctedLabels, reason, err := callGeminiVision(apiKey, s.RawText, charLabels, imageB64)
+		suggestion, correctedText, reviewLabels, reason, err := callGeminiVision(apiKey, s.RawText, charLabels, imageB64)
 		if err != nil {
 			result.Suggestion = "error"
 			result.Reason = err.Error()
 		} else {
 			result.Suggestion = suggestion
 			result.CorrectedText = correctedText
-			result.CorrectedLabels = correctedLabels
 			result.Reason = reason
+			if reviewLabels != nil {
+				result.CorrectedClasses = reviewLabels.CorrectedClasses
+				result.NewBoxes = reviewLabels.NewBoxes
+			}
 		}
 
 		results = append(results, result)

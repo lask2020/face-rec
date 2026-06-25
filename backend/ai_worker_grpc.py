@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import socket
 import time
 import sys
 import threading
@@ -29,6 +30,11 @@ from app.license_plate import LicensePlateEngine, PlateResult, CharDet
 from app.license_plate.validate import LicensePlateValidator
 
 license_plate_engine: LicensePlateEngine | None = None
+
+# Persistent identity for this worker process. Set WORKER_NAME env var to a
+# stable name (e.g. "gpu-node-1") so config (role, pause, max_cameras) survives
+# reconnects. Falls back to hostname if not set.
+WORKER_NAME: str = os.getenv("WORKER_NAME", "") or socket.gethostname()
 
 
 # ── Model sync from control plane S3 ─────────────────────────────────────────
@@ -1182,6 +1188,10 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                 flusher_thread.start()
 
                 def request_generator():
+                    # Identify this worker to the server before any real messages.
+                    yield facerec_pb2.InferenceResult(task_id="hello", worker_name=WORKER_NAME)
+                    logger.info(f"Sent worker identification: {WORKER_NAME}")
+
                     while True:
                         if stop_event and stop_event.is_set():
                             send_queue.put(None)
@@ -1192,6 +1202,8 @@ def run_grpc_client(control_plane_url=None, onnx_provider=None, stop_event=None)
                                 break
                             if getattr(item, 'task_id', '') != 'metrics':
                                 logger.debug(f"Yielding task {item.task_id} to gRPC stream (detections: {len(item.detections)})")
+                            # Attach worker identity to every message for traceability
+                            item.worker_name = WORKER_NAME
                             yield item
                         except queue.Empty:
                             continue

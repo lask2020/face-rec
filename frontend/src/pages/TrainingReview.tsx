@@ -416,7 +416,7 @@ function SampleCard({
             )}
             {aiResult.reason}
           </span>
-          {(aiResult.corrected_text || aiResult.corrected_labels?.length) && (
+          {(aiResult.corrected_text || aiResult.corrected_classes?.length || aiResult.new_boxes?.length) && (
             <button
               onClick={onApplyAI}
               title="บันทึก labels/text ที่ AI แก้ไว้ โดยยังไม่เปลี่ยนสถานะ"
@@ -768,23 +768,37 @@ export default function TrainingReview() {
     }
   };
 
+  const mergeAILabels = (sample: TrainingSample, r: AIReviewResult): string | undefined => {
+    const hasCorrections = r.corrected_classes?.length || r.new_boxes?.length;
+    if (!hasCorrections) return undefined;
+    try {
+      const existing: CharLabel[] = JSON.parse(sample.char_labels || '[]');
+      // Replace class_name on existing boxes (keep positions)
+      let merged = existing.map((lbl, i) => ({
+        ...lbl,
+        class_name: r.corrected_classes?.[i] ?? lbl.class_name,
+        confidence: r.corrected_classes?.[i] ? 1.0 : lbl.confidence,
+      }));
+      // Append new boxes detected by AI, then re-sort left→right
+      if (r.new_boxes?.length) {
+        merged = [...merged, ...r.new_boxes].sort((a, b) => a.cx - b.cx);
+      }
+      return JSON.stringify(merged);
+    } catch { return undefined; }
+  };
+
   const handleApplyAIToSample = async (id: number) => {
     const r = aiResults.get(id);
     if (!r) return;
+    const sample = samples.find((s) => s.id === id);
+    if (!sample) return;
     const update: { corrected_text?: string; char_labels?: string } = {};
     if (r.corrected_text) update.corrected_text = r.corrected_text;
-    if (r.corrected_labels?.length) update.char_labels = JSON.stringify(r.corrected_labels);
+    const mergedLabels = mergeAILabels(sample, r);
+    if (mergedLabels) update.char_labels = mergedLabels;
     if (!update.corrected_text && !update.char_labels) return;
     await trainingApi.update(id, update);
-    // Reflect new labels locally so the canvas redraws immediately
-    setSamples((prev) => prev.map((s) => {
-      if (s.id !== id) return s;
-      return {
-        ...s,
-        ...(update.corrected_text ? { corrected_text: update.corrected_text } : {}),
-        ...(update.char_labels ? { char_labels: update.char_labels } : {}),
-      };
-    }));
+    setSamples((prev) => prev.map((s) => s.id !== id ? s : { ...s, ...update }));
   };
 
   const handleSaveGeminiKey = async () => {
@@ -823,12 +837,13 @@ export default function TrainingReview() {
     for (const id of selectedIds) {
       const r = aiResults.get(id);
       if (r?.suggestion === 'approve') {
-        const hasCorrection = r.corrected_text || r.corrected_labels?.length;
+        const sample = samples.find((s) => s.id === id);
+        const mergedLabels = sample ? mergeAILabels(sample, r) : undefined;
+        const hasCorrection = r.corrected_text || mergedLabels;
         if (hasCorrection) {
           const update: { id: number; corrected_text?: string; char_labels?: string } = { id };
           if (r.corrected_text) update.corrected_text = r.corrected_text;
-          // corrected_labels already has full cx/cy/bw/bh — use directly
-          if (r.corrected_labels?.length) update.char_labels = JSON.stringify(r.corrected_labels);
+          if (mergedLabels) update.char_labels = mergedLabels;
           approveWithData.push(update);
         } else {
           approveIds.push(id);

@@ -107,12 +107,15 @@ class AIWorkerWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("FaceRec AI Worker Node")
         self.setMinimumSize(700, 500)
 
         self.worker_thread = None
         self.is_running = False
+        name = self.worker_name_value
+        self.setWindowTitle(f"FaceRec AI Worker — {name}" if name else "FaceRec AI Worker Node")
 
+        import socket as _socket
+        self.worker_name_value = os.getenv("WORKER_NAME", "") or _socket.gethostname()
         self.url_value = os.getenv("CONTROL_PLANE_URL", "localhost:50051")
         self.provider_value = "CPUExecutionProvider"
         # Plate-tracking defaults (mirror ai_worker_grpc.py)
@@ -134,6 +137,7 @@ class AIWorkerWindow(QMainWindow):
             try:
                 with open(self.CONFIG_FILE, "r") as f:
                     config = json.load(f)
+                    self.worker_name_value = config.get("worker_name", self.worker_name_value)
                     self.url_value = config.get("url", self.url_value)
                     self.provider_value = config.get("provider", self.provider_value)
                     self.min_plate_hits_value = config.get("min_plate_hits", self.min_plate_hits_value)
@@ -151,6 +155,7 @@ class AIWorkerWindow(QMainWindow):
         try:
             with open(self.CONFIG_FILE, "w") as f:
                 json.dump({
+                    "worker_name": self.worker_name_entry.text().strip(),
                     "url": self.url_entry.text().strip(),
                     "provider": self.provider_combo.currentText(),
                     "min_plate_hits": self.min_plate_hits_spin.value(),
@@ -182,19 +187,22 @@ class AIWorkerWindow(QMainWindow):
         form_layout = QGridLayout()
         form_layout.setColumnStretch(1, 1)
 
-        # Control Plane URL
-        url_lbl = QLabel("Control Plane URL:")
-        url_lbl.setFont(QFont("Helvetica", 13))
-        self.url_entry = QLineEdit(self.url_value)
-        self.url_entry.setFont(QFont("Helvetica", 13))
-        self.url_entry.editingFinished.connect(self._save_config)
-        
+        # Worker Name
+        name_lbl = QLabel("Worker Name:")
+        name_lbl.setFont(QFont("Helvetica", 13))
+        name_lbl.setToolTip("Persistent identity for this worker. Used to persist pause state,\n"
+                            "role, and max cameras across reconnects.\n"
+                            "Set via WORKER_NAME env var or edit here.")
+        self.worker_name_entry = QLineEdit(self.worker_name_value)
+        self.worker_name_entry.setFont(QFont("Helvetica", 13))
+        self.worker_name_entry.setPlaceholderText("e.g. gpu-node-1")
+        self.worker_name_entry.editingFinished.connect(self._on_worker_name_changed)
+
         # Start/Stop Button
         self.start_btn = QPushButton("⚡ Start Worker")
         self.start_btn.setFont(QFont("Helvetica", 13, QFont.Weight.Bold))
         self.start_btn.setMinimumHeight(45)
         self.start_btn.clicked.connect(self.toggle_worker)
-        # Add PyQt styling for the button
         self.start_btn.setStyleSheet("""
             QPushButton {
                 background-color: #1f538d;
@@ -206,9 +214,19 @@ class AIWorkerWindow(QMainWindow):
             }
         """)
 
-        form_layout.addWidget(url_lbl, 0, 0)
-        form_layout.addWidget(self.url_entry, 0, 1)
-        form_layout.addWidget(self.start_btn, 0, 2, 2, 1) # Span 2 rows
+        form_layout.addWidget(name_lbl, 0, 0)
+        form_layout.addWidget(self.worker_name_entry, 0, 1)
+        form_layout.addWidget(self.start_btn, 0, 2, 3, 1)  # Span 3 rows
+
+        # Control Plane URL
+        url_lbl = QLabel("Control Plane URL:")
+        url_lbl.setFont(QFont("Helvetica", 13))
+        self.url_entry = QLineEdit(self.url_value)
+        self.url_entry.setFont(QFont("Helvetica", 13))
+        self.url_entry.editingFinished.connect(self._save_config)
+
+        form_layout.addWidget(url_lbl, 1, 0)
+        form_layout.addWidget(self.url_entry, 1, 1)
 
         # Execution Provider
         provider_lbl = QLabel("Execution Provider:")
@@ -224,16 +242,13 @@ class AIWorkerWindow(QMainWindow):
             "DmlExecutionProvider"
         ]
         self.provider_combo.addItems(providers)
-        
-        # Set selected provider
         index = self.provider_combo.findText(self.provider_value)
         if index >= 0:
             self.provider_combo.setCurrentIndex(index)
-            
         self.provider_combo.currentTextChanged.connect(self._save_config)
 
-        form_layout.addWidget(provider_lbl, 1, 0)
-        form_layout.addWidget(self.provider_combo, 1, 1)
+        form_layout.addWidget(provider_lbl, 2, 0)
+        form_layout.addWidget(self.provider_combo, 2, 1)
 
         main_layout.addLayout(form_layout)
 
@@ -390,6 +405,14 @@ class AIWorkerWindow(QMainWindow):
         self.log_textedit.setStyleSheet("background-color: #1e1e1e; color: #00ff00;")
         main_layout.addWidget(self.log_textedit)
 
+    def _on_worker_name_changed(self):
+        name = self.worker_name_entry.text().strip()
+        if name:
+            self.setWindowTitle(f"FaceRec AI Worker — {name}")
+        else:
+            self.setWindowTitle("FaceRec AI Worker Node")
+        self._save_config()
+
     def setup_logging(self):
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
@@ -423,14 +446,19 @@ class AIWorkerWindow(QMainWindow):
             self.start_worker()
 
     def start_worker(self):
+        worker_name = self.worker_name_entry.text().strip()
         url = self.url_entry.text().strip()
         provider = self.provider_combo.currentText()
 
+        if not worker_name:
+            logging.error("Worker Name cannot be empty.")
+            return
         if not url:
             logging.error("Control Plane URL cannot be empty.")
             return
 
         plate_settings = {
+            "WORKER_NAME": worker_name,
             "MIN_PLATE_HITS": self.min_plate_hits_spin.value(),
             "PLATE_TRACK_TIMEOUT": self.plate_track_timeout_spin.value(),
             "PLATE_TRACK_MAX_DURATION": self.plate_track_max_duration_spin.value(),
@@ -441,6 +469,7 @@ class AIWorkerWindow(QMainWindow):
             "FINETUNE_FREEZE": self.finetune_freeze_spin.value(),
         }
 
+        self.worker_name_entry.setEnabled(False)
         self.url_entry.setEnabled(False)
         self.provider_combo.setEnabled(False)
         self.min_plate_hits_spin.setEnabled(False)
@@ -458,16 +487,17 @@ class AIWorkerWindow(QMainWindow):
                 background-color: #7a2424;
             }
         """)
+        self.setWindowTitle(f"FaceRec AI Worker — {worker_name} [running]")
 
         self.is_running = True
-        
+
         self.worker_thread = WorkerThread(url, provider, plate_settings)
         self.worker_thread.finished_signal.connect(self.on_worker_finished)
         self.worker_thread.error_signal.connect(self.on_worker_error)
         self.worker_thread.log_signal.connect(self.append_log)
         self.worker_thread.start()
-        
-        logging.info(f"Starting worker thread connecting to {url} with {provider}...")
+
+        logging.info(f"Starting worker '{worker_name}' connecting to {url} with {provider}...")
 
     def stop_worker(self):
         if self.worker_thread and self.worker_thread.isRunning():
@@ -487,12 +517,15 @@ class AIWorkerWindow(QMainWindow):
                 background-color: #14375d;
             }
         """)
+        self.worker_name_entry.setEnabled(True)
         self.url_entry.setEnabled(True)
         self.provider_combo.setEnabled(True)
         self.min_plate_hits_spin.setEnabled(True)
         self.plate_track_timeout_spin.setEnabled(True)
         self.plate_track_max_duration_spin.setEnabled(True)
         self.training_capture_conf_min_spin.setEnabled(True)
+        name = self.worker_name_entry.text().strip()
+        self.setWindowTitle(f"FaceRec AI Worker — {name}" if name else "FaceRec AI Worker Node")
         logging.info("Worker thread completely stopped.")
 
     def on_worker_error(self, err_msg):
