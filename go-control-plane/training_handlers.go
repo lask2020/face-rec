@@ -972,6 +972,10 @@ type ModelVersionMeta struct {
 }
 
 func listModelVersions(c *fiber.Ctx) error {
+	// Restore any version meta.json files that exist in S3 but not locally
+	// (e.g. after a container restart where the local versions/ dir was empty).
+	restoreVersionsFromS3()
+
 	versionsDir := filepath.Join(resolveModelsDir(), "versions")
 	entries, err := os.ReadDir(versionsDir)
 	if err != nil {
@@ -999,6 +1003,12 @@ func listModelVersions(c *fiber.Ctx) error {
 		}
 		onnxPath := filepath.Join(versionsDir, e.Name(), "thai_char_yolo26s.onnx")
 		meta.HasOnnx = fileExists(onnxPath)
+		// If not on local disk, check S3
+		if !meta.HasOnnx && S3Client != nil {
+			_, statErr := S3Client.StatObject(c.Context(), ModelsBucket,
+				"versions/"+e.Name()+"/thai_char_yolo26s.onnx", minio.StatObjectOptions{})
+			meta.HasOnnx = statErr == nil
+		}
 		meta.Active = meta.Version == activeVersion
 		versions = append(versions, meta)
 	}
@@ -1020,11 +1030,19 @@ func listModelVersions(c *fiber.Ctx) error {
 func activateVersion(version string) error {
 	modelsDir := resolveModelsDir()
 	versionDir := filepath.Join(modelsDir, "versions", version)
+
+	// Version dir may only exist in S3 after a restart — create it locally.
 	if !fileExists(versionDir) {
-		return fmt.Errorf("version not found: %s", version)
+		if err := os.MkdirAll(versionDir, 0o755); err != nil {
+			return fmt.Errorf("version not found: %s", version)
+		}
 	}
 
+	// Restore model files from S3 if they're missing locally (post-restart).
 	ptSrc := filepath.Join(versionDir, "thai_char_yolo26s.pt")
+	if !fileExists(ptSrc) {
+		_ = fetchFileFromS3("versions/"+version+"/thai_char_yolo26s.pt", ptSrc)
+	}
 	ptDst := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
 	if fileExists(ptSrc) {
 		if err := copyFile(ptSrc, ptDst); err != nil {
@@ -1033,11 +1051,18 @@ func activateVersion(version string) error {
 	}
 
 	onnxSrc := filepath.Join(versionDir, "thai_char_yolo26s.onnx")
+	if !fileExists(onnxSrc) {
+		_ = fetchFileFromS3("versions/"+version+"/thai_char_yolo26s.onnx", onnxSrc)
+	}
 	onnxDst := filepath.Join(modelsDir, "thai_char_yolo26s.onnx")
 	if fileExists(onnxSrc) {
 		if err := copyFile(onnxSrc, onnxDst); err != nil {
 			return fmt.Errorf("copy .onnx failed: %w", err)
 		}
+	}
+
+	if !fileExists(ptDst) && !fileExists(onnxDst) {
+		return fmt.Errorf("version not found locally or in S3: %s", version)
 	}
 
 	writeActiveVersion(version)
@@ -1047,6 +1072,7 @@ func activateVersion(version string) error {
 	// caller returns immediately; the actual reload happens in background.
 	go func() {
 		pushModelsToS3(version)
+		pushVersionToS3(version)
 		n := BroadcastReloadModels()
 		log.Printf("[ModelActivate] version %s pushed to S3, reload delivered to %d worker(s)", version, n)
 	}()

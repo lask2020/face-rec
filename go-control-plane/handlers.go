@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -758,8 +759,16 @@ func GetWorkers(c *fiber.Ctx) error {
 		}
 	}
 
+	// Collect map keys sorted so response order is stable across polls.
+	sortedNames := make([]string, 0, len(configByName))
+	for name := range configByName {
+		sortedNames = append(sortedNames, name)
+	}
+	sort.Strings(sortedNames)
+
 	result := make([]WorkerInfo, 0, len(configByName))
-	for name, cfg := range configByName {
+	for _, name := range sortedNames {
+		cfg := configByName[name]
 		role := cfg.Role
 		if role == "" {
 			role = "both"

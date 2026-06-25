@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -109,6 +110,100 @@ func pushModelsToS3(version string) {
 		log.Printf("[ModelS3] upload meta.json failed: %v", err)
 	}
 	log.Printf("[ModelS3] Push complete for version %s", version)
+}
+
+// pushVersionToS3 uploads model + meta files for a specific version to
+// S3 under the versions/{version}/ prefix so they survive restarts.
+func pushVersionToS3(version string) {
+	if S3Client == nil {
+		return
+	}
+	modelsDir := resolveModelsDir()
+	versionDir := filepath.Join(modelsDir, "versions", version)
+	ctx := context.Background()
+
+	for _, name := range append(modelFileNames, "meta.json") {
+		localPath := filepath.Join(versionDir, name)
+		f, err := os.Open(localPath)
+		if err != nil {
+			continue
+		}
+		stat, _ := f.Stat()
+		s3Key := "versions/" + version + "/" + name
+		_, err = S3Client.PutObject(ctx, ModelsBucket, s3Key, f, stat.Size(),
+			minio.PutObjectOptions{ContentType: "application/octet-stream"})
+		f.Close()
+		if err != nil {
+			log.Printf("[ModelS3] upload %s failed: %v", s3Key, err)
+		} else {
+			log.Printf("[ModelS3] uploaded %s (%d bytes)", s3Key, stat.Size())
+		}
+	}
+}
+
+// fetchFileFromS3 downloads an arbitrary S3 key to a local path.
+func fetchFileFromS3(key, dest string) error {
+	ctx := context.Background()
+	obj, err := S3Client.GetObject(ctx, ModelsBucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return err
+	}
+	defer obj.Close()
+	tmp := dest + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(f, obj); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	f.Close()
+	return os.Rename(tmp, dest)
+}
+
+// restoreVersionsFromS3 downloads meta.json for any versions that exist in S3
+// but not locally — called at list time so version history survives restarts.
+func restoreVersionsFromS3() {
+	if S3Client == nil {
+		return
+	}
+	ctx := context.Background()
+	modelsDir := resolveModelsDir()
+	versionsDir := filepath.Join(modelsDir, "versions")
+
+	objects := S3Client.ListObjects(ctx, ModelsBucket, minio.ListObjectsOptions{
+		Prefix:    "versions/",
+		Recursive: true,
+	})
+
+	for obj := range objects {
+		if obj.Err != nil {
+			continue
+		}
+		rel := strings.TrimPrefix(obj.Key, "versions/")
+		parts := strings.SplitN(rel, "/", 2)
+		if len(parts) != 2 || parts[1] != "meta.json" {
+			continue
+		}
+		version := parts[0]
+		if !validVersionName(version) {
+			continue
+		}
+		localMeta := filepath.Join(versionsDir, version, "meta.json")
+		if fileExists(localMeta) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(versionsDir, version), 0o755); err != nil {
+			continue
+		}
+		if err := fetchFileFromS3(obj.Key, localMeta); err != nil {
+			log.Printf("[ModelS3] restore version %s meta.json: %v", version, err)
+		} else {
+			log.Printf("[ModelS3] restored version %s from S3", version)
+		}
+	}
 }
 
 // ── REST Handlers ─────────────────────────────────────────────────────────────
