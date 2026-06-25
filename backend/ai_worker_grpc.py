@@ -527,15 +527,25 @@ def _assemble_multi_frame(frame_results: list) -> PlateResult:
 
     best_frame = max(candidates, key=lambda pr: pr.confidence)
 
+    # Snapshot geometry MUST come from the LAST frame, not the best-confidence frame.
+    # The Go side crops the wide vehicle snapshot from the image of `track.task_id`, and
+    # PlateTrack.update() always advances task_id together with appending to frame_results
+    # — so `track.task_id` == the last frame (frame_results[-1]). If we sent the best
+    # frame's bbox here, Go would crop that bbox out of a *different* frame's image; the
+    # car has moved between the two frames, so the crop lands off the plate ("คนละเฟรมกัน").
+    # OCR text/province still use the best frames above; only the snapshot bbox + crop are
+    # pinned to the last frame so they stay aligned with the image Go actually has.
+    snap_frame = frame_results[-1]
+
     return PlateResult(
         plate_number=plate_number,
         confidence=final_conf,
-        bbox=best_frame.bbox,
+        bbox=snap_frame.bbox,                 # aligned with track.task_id's image (last frame)
         plate_type=best_frame.plate_type,
         province=province,
         raw_text=raw_text,
         chars=[],
-        crop_bytes=best_frame.crop_bytes,  # deskewed crop from best-confidence frame
+        crop_bytes=snap_frame.crop_bytes,     # deskewed crop from the same (last) frame
     )
 
 

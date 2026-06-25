@@ -467,8 +467,39 @@ def _run(args, tmp_root, YOLO, torch):
         torch.unique = _safe_unique
         return _orig
 
+    def _patch_mps_assigner():
+        """Offload YOLO's TaskAlignedAssigner to CPU on MPS.
+
+        PyTorch MPS has a bug in the advanced indexing used by
+        ``TaskAlignedAssigner.get_box_metrics`` (tal.py):
+            bbox_scores[mask_gt] = pd_scores[ind[0], :, ind[1]][mask_gt]
+        produces a wrong-shaped result on MPS → 'shape mismatch: value tensor
+        of shape [...] cannot be broadcast to indexing result of shape [...]'.
+        ``PYTORCH_ENABLE_MPS_FALLBACK`` does NOT catch it because the op *is*
+        implemented on MPS — it just returns the wrong shape. Ultralytics' own
+        forward() only falls back to CPU on 'out of memory' errors, so this one
+        re-raises and drops the whole run to CPU.
+
+        The assigner runs under @torch.no_grad() (pure target assignment, no
+        gradients) and is cheap relative to the conv backbone, so we run it on
+        CPU and copy results back to MPS — keeping the bulk of training on GPU."""
+        from ultralytics.utils.tal import TaskAlignedAssigner
+        _orig = TaskAlignedAssigner.forward
+
+        def _cpu_forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
+            dev_in = pd_scores.device
+            if dev_in.type == "mps":
+                result = _orig(self, pd_scores.cpu(), pd_bboxes.cpu(), anc_points.cpu(),
+                               gt_labels.cpu(), gt_bboxes.cpu(), mask_gt.cpu())
+                return tuple(t.to(dev_in) if torch.is_tensor(t) else t for t in result)
+            return _orig(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt)
+
+        TaskAlignedAssigner.forward = _cpu_forward
+        return _orig
+
     def run_train(dev):
         is_cpu = (dev == "cpu")
+        is_mps = (dev == "mps")
         is_directml = str(dev).startswith("privateuseone") or (
             hasattr(dev, "type") and str(getattr(dev, "type", "")).startswith("privateuseone")
         )
@@ -477,6 +508,11 @@ def _run(args, tmp_root, YOLO, torch):
         if is_directml:
             emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
             orig_unique = _patch_directml_unique()
+
+        orig_assigner = None
+        if is_mps:
+            emit({"type": "info", "message": "Applying MPS patch for TaskAlignedAssigner (CPU offload) ..."})
+            orig_assigner = _patch_mps_assigner()
 
         # AMP (mixed precision) is CUDA-only in ultralytics. Its startup AMP check
         # calls torch.cuda and crashes on DirectML/CPU ("Torch not compiled with
@@ -554,6 +590,9 @@ def _run(args, tmp_root, YOLO, torch):
                 torch.cuda.empty_cache()
             if orig_unique is not None:
                 torch.unique = orig_unique
+            if orig_assigner is not None:
+                from ultralytics.utils.tal import TaskAlignedAssigner
+                TaskAlignedAssigner.forward = orig_assigner
 
     try:
         run_train(device)
@@ -561,6 +600,14 @@ def _run(args, tmp_root, YOLO, torch):
         # DirectML / non-CUDA GPU training under ultralytics is unreliable.
         # Fall back to CPU so the job still completes (slower but works).
         if device != "cpu":
+            # Emit the full traceback so the exact failing op/line is visible. The MPS
+            # "size of tensor a must match tensor b" crash lives in YOLO's loss code; we
+            # need to know precisely which op fails to write a targeted CPU-offload patch
+            # (same technique as _patch_directml_unique above) instead of dropping the
+            # whole run to CPU. Last frames are the ones inside torch/ultralytics.
+            import traceback as _tb
+            tb_str = "".join(_tb.format_exception(type(e), e, e.__traceback__))
+            emit({"type": "info", "message": f"GPU training traceback:\n{tb_str[-2000:]}"})
             emit({"type": "info", "message": f"GPU training failed ({e}) — retrying on CPU"})
             try:
                 run_train("cpu")
