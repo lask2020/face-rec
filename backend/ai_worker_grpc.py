@@ -290,7 +290,6 @@ COOLDOWN_DURATION = 30.0  # seconds
 PLATE_TRACK_TIMEOUT = float(os.getenv("PLATE_TRACK_TIMEOUT", "6.0"))      # seconds of inactivity before flushing
 PLATE_TRACK_MAX_DURATION = float(os.getenv("PLATE_TRACK_MAX_DURATION", "12.0"))
 PLATE_COOLDOWN_DURATION = 10.0  # don't re-report same plate for 10 s
-MIN_PLATE_FLUSH_CONF   = float(os.getenv("MIN_PLATE_FLUSH_CONF", "0.25"))  # discard very noisy invalids
 PLATE_IOU_THRESH = 0.4         # IoU threshold for matching same plate across frames
 MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame detections
 # Frames with confidence AT OR ABOVE this threshold are captured for training review.
@@ -552,12 +551,16 @@ def flush_plate_track(track: PlateTrack, send_queue):
     pr = _assemble_multi_frame(track.frame_results)
     label = pr.plate_number or pr.raw_text or "?"
 
-    # Gate: discard very noisy results that the engine couldn't parse into a valid plate.
-    if pr.plate_number is None and pr.confidence < MIN_PLATE_FLUSH_CONF:
+    # Gate: only flush reads that parsed into a valid Thai plate. An unparseable read
+    # (plate_number is None) is OCR noise — a real plate always has >=2 consonants + a
+    # number block, so a read that fails validation (pure-digit junk like '3764255',
+    # partial reads like '22ก', wrong-length garbage) is never a real plate and must not
+    # pollute the detection log regardless of its raw confidence. Training-frame capture
+    # below is independent of this gate, so dropping these costs no training data.
+    if pr.plate_number is None:
         logger.info(
             f"Discarding plate track for camera {track.camera_id} "
-            f"(confidence={pr.confidence:.2f} < {MIN_PLATE_FLUSH_CONF}, no valid plate number) "
-            f"raw='{pr.raw_text}'"
+            f"(no valid plate number; conf={pr.confidence:.2f}) raw='{pr.raw_text}'"
         )
         return
 

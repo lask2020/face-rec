@@ -60,6 +60,12 @@ cp facerec.proto backend/facerec.proto
   - **Count group** chosen by **highest total confidence** (not most frames) — a few
     high-conf reads of the right length beat many low-conf garbage frames.
   - Per-slot best confidence across the chosen group, province by majority vote.
+- **Flush gate (`flush_plate_track`)**: a track is only sent to the control plane if it
+  parsed into a **valid `plate_number`**. Unparseable reads (`plate_number is None` — pure-digit
+  junk, partial reads like `22ก`, wrong-length garbage) are dropped entirely *regardless of
+  confidence*, since a real Thai plate always has ≥2 consonants + a number block. This keeps the
+  detection log clean. Training-frame capture is independent of this gate (keys off
+  `TRAINING_CAPTURE_CONF_MIN`), so dropping invalid reads costs **no** training data.
 - **Fuzzy cooldown**: Levenshtein distance ≤ `PLATE_FUZZY_DIST` (default 2) prevents duplicate DB records from OCR-variant plates
 
 ### Plate text validation (`backend/app/license_plate/validate.py`)
@@ -86,7 +92,6 @@ cp facerec.proto backend/facerec.proto
 | `PLATE_FUZZY_DIST` | `2` | Max edit distance for duplicate suppression |
 | `PLATE_TRACK_TIMEOUT` | `6.0` | Seconds before flushing idle track |
 | `PLATE_TRACK_MAX_DURATION` | `12.0` | Max seconds to accumulate a track |
-| `MIN_PLATE_FLUSH_CONF` | `0.25` | Discard tracks below this confidence |
 | `MIN_PLATE_HITS` | `1` | Minimum frames required to flush |
 | `PLATE_CORRECTION_CONF_PENALTY` | `0.8` | Confidence multiplier when a plate validated only after a real OCR-artifact correction |
 | `TRAINING_CAPTURE_CONF_MIN` | `0.45` | Frames at/above this conf are captured for training review |
