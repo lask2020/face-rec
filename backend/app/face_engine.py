@@ -460,16 +460,24 @@ class FaceEngine:
 
         face = faces[0]
 
-        # 2. Frontality Gate: Check yaw, pitch, roll (strict 15.0 degrees for registration)
+        # 2. Frontality Gate: Check yaw + roll only (strict 15.0 degrees for registration).
         # pose model is not loaded (removed for AMD GPU/Windows compatibility), so we
         # always fall back to landmark-based estimation via _estimate_pose_from_kps.
+        # NOTE: pitch is intentionally NOT gated. The landmark-based pitch estimate assumes
+        # every person's nose tip sits ~45% of the way from the eye-line to the mouth-line
+        # (pitch = (nose_ratio - 0.45) * 100), but that ratio varies ±0.15 across individual
+        # face proportions = ±15°, which is the entire tolerance. So pitch here is dominated
+        # by per-person facial geometry rather than actual head tilt and falsely rejects
+        # straight-on faces (e.g. a longer-nosed subject reads as pitch≈27° while looking
+        # forward). yaw (nose horizontal offset) and roll (eye-line angle) are geometrically
+        # robust, so we gate on those alone.
         pose = face.get("pose")
         if pose is None:
             pose = _estimate_pose_from_kps(getattr(face, 'kps', None))
         pitch, yaw, roll = pose
         max_angle = 15.0
-        if abs(pitch) > max_angle or abs(yaw) > max_angle or abs(roll) > max_angle:
-            return None, f"Face is not looking straight (yaw: {abs(yaw):.1f}°, pitch: {abs(pitch):.1f}°, roll: {abs(roll):.1f}°). Maximum allowed is {max_angle}°."
+        if abs(yaw) > max_angle or abs(roll) > max_angle:
+            return None, f"Face is not looking straight (yaw: {abs(yaw):.1f}°, roll: {abs(roll):.1f}°). Maximum allowed is {max_angle}°."
 
         # 3. Sharpness Gate: Check Laplacian variance (strict 60.0 threshold for registration)
         bbox_list = face.bbox.tolist()
