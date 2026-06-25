@@ -1094,7 +1094,15 @@ func writeVersionMeta(version string, epochs int) {
 	dir := filepath.Join(resolveModelsDir(), "versions", version)
 	os.MkdirAll(dir, 0o755) //nolint:errcheck
 	b, _ := json.Marshal(meta)
-	os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644) //nolint:errcheck
+	metaPath := filepath.Join(dir, "meta.json")
+	os.WriteFile(metaPath, b, 0o644) //nolint:errcheck
+
+	// Push meta.json to S3 immediately so it survives restarts.
+	go func() {
+		if err := uploadBytesToS3("versions/"+version+"/meta.json", b); err != nil {
+			log.Printf("[VersionMeta] S3 upload meta.json failed: %v", err)
+		}
+	}()
 }
 
 func deployModelVersion(c *fiber.Ctx) error {
@@ -1178,6 +1186,7 @@ func snapshotModelVersion(c *fiber.Ctx) error {
 	os.WriteFile(filepath.Join(destDir, "meta.json"), b, 0o644) //nolint:errcheck
 
 	log.Printf("[ModelSnapshot] Saved active model as version %s (label=%q)", version, label)
+	go pushVersionToS3(version)
 	return c.JSON(meta)
 }
 

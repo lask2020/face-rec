@@ -112,6 +112,17 @@ func pushModelsToS3(version string) {
 	log.Printf("[ModelS3] Push complete for version %s", version)
 }
 
+// uploadBytesToS3 uploads raw bytes to a given S3 key.
+func uploadBytesToS3(key string, data []byte) error {
+	if S3Client == nil {
+		return nil
+	}
+	_, err := S3Client.PutObject(context.Background(), ModelsBucket, key,
+		bytes.NewReader(data), int64(len(data)),
+		minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	return err
+}
+
 // pushVersionToS3 uploads model + meta files for a specific version to
 // S3 under the versions/{version}/ prefix so they survive restarts.
 func pushVersionToS3(version string) {
@@ -165,6 +176,8 @@ func fetchFileFromS3(key, dest string) error {
 
 // restoreVersionsFromS3 downloads meta.json for any versions that exist in S3
 // but not locally — called at list time so version history survives restarts.
+// As a fallback it also reconstructs the active version from S3 root model
+// files when no versioned entries exist at all (pre-S3-versioning deploys).
 func restoreVersionsFromS3() {
 	if S3Client == nil {
 		return
@@ -173,6 +186,8 @@ func restoreVersionsFromS3() {
 	modelsDir := resolveModelsDir()
 	versionsDir := filepath.Join(modelsDir, "versions")
 
+	// ── Pass 1: restore explicitly-versioned meta.json files ─────────────────
+	found := 0
 	objects := S3Client.ListObjects(ctx, ModelsBucket, minio.ListObjectsOptions{
 		Prefix:    "versions/",
 		Recursive: true,
@@ -191,6 +206,7 @@ func restoreVersionsFromS3() {
 		if !validVersionName(version) {
 			continue
 		}
+		found++
 		localMeta := filepath.Join(versionsDir, version, "meta.json")
 		if fileExists(localMeta) {
 			continue
@@ -202,6 +218,52 @@ func restoreVersionsFromS3() {
 			log.Printf("[ModelS3] restore version %s meta.json: %v", version, err)
 		} else {
 			log.Printf("[ModelS3] restored version %s from S3", version)
+		}
+	}
+
+	// ── Pass 2: fallback — reconstruct active version from S3 root ───────────
+	// Handles the case where versions were never pushed under versions/ prefix
+	// (pre-fix deploys). Reads the root meta.json that pushModelsToS3 always
+	// writes, then synthesises a local version entry so the UI shows something.
+	if found == 0 {
+		rootMeta, err := func() (map[string]interface{}, error) {
+			obj, err := S3Client.GetObject(ctx, ModelsBucket, "meta.json", minio.GetObjectOptions{})
+			if err != nil {
+				return nil, err
+			}
+			defer obj.Close()
+			var m map[string]interface{}
+			if err := json.NewDecoder(obj).Decode(&m); err != nil {
+				return nil, err
+			}
+			return m, nil
+		}()
+		if err != nil {
+			return
+		}
+		version, _ := rootMeta["version"].(string)
+		updatedAt, _ := rootMeta["updated_at"].(string)
+		if version == "" || !validVersionName(version) {
+			return
+		}
+		localMeta := filepath.Join(versionsDir, version, "meta.json")
+		if fileExists(localMeta) {
+			return
+		}
+		if err := os.MkdirAll(filepath.Join(versionsDir, version), 0o755); err != nil {
+			return
+		}
+		synthetic := map[string]interface{}{
+			"version":    version,
+			"label":      "restored from S3",
+			"trained_at": updatedAt,
+			"base_model": "thai_char_yolo26s.pt",
+		}
+		b, _ := json.Marshal(synthetic)
+		if err := os.WriteFile(localMeta, b, 0o644); err == nil {
+			log.Printf("[ModelS3] synthesised version entry %s from S3 root meta.json", version)
+			// Also push this under versions/ prefix for future restores.
+			go pushVersionToS3(version)
 		}
 	}
 }
@@ -335,6 +397,23 @@ func uploadModelFile(c *fiber.Ctx) error {
 	}
 
 	log.Printf("[ModelUpload] saved %s for version %s (%d bytes)", name, version, len(body))
+
+	// Mirror immediately to S3 so the version survives a control-plane restart.
+	go func() {
+		s3Key := "versions/" + version + "/" + name
+		f, err := os.Open(dest)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		stat, _ := f.Stat()
+		if S3Client != nil {
+			_, _ = S3Client.PutObject(context.Background(), ModelsBucket, s3Key, f, stat.Size(),
+				minio.PutObjectOptions{ContentType: "application/octet-stream"})
+			log.Printf("[ModelUpload] mirrored %s to S3", s3Key)
+		}
+	}()
+
 	return c.JSON(fiber.Map{"saved": name, "version": version, "bytes": len(body)})
 }
 
