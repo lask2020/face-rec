@@ -301,6 +301,13 @@ MIN_PLATE_HITS = int(os.getenv("MIN_PLATE_HITS", "1"))  # discard single-frame d
 TRAINING_CAPTURE_CONF_MIN = float(os.getenv("TRAINING_CAPTURE_CONF_MIN", "0.45"))
 # Max frames per track to send as training data (pick highest-confidence ones)
 TRAINING_MAX_FRAMES_PER_TRACK = int(os.getenv("TRAINING_MAX_FRAMES_PER_TRACK", "3"))
+# When assembling a track's final read, vote over only the top-K highest-confidence
+# frames instead of every frame. A track accumulates many blurry frames where the
+# model misreads consonants as digits; including them drags the assembled read toward
+# garbage (the digit-only plates seen on the all-plates page). Training already proves
+# the few high-confidence frames read the plate correctly, so restrict the vote to that
+# same cream. Set to 0 to disable (vote over all frames). Default mirrors training.
+PLATE_ASSEMBLE_TOP_K = int(os.getenv("PLATE_ASSEMBLE_TOP_K", "5"))
 # Multiplier applied to the stored confidence when a plate only became valid AFTER
 # correct_common_errors() fixed an OCR artifact. A corrected read is genuinely less
 # certain than one that matched plate rules directly, so its confidence should reflect
@@ -441,6 +448,16 @@ def _assemble_multi_frame(frame_results: list) -> PlateResult:
     # Fallback: nothing plausible to assemble (old-path or engine error)
     if not usable:
         return max(frame_results, key=lambda pr: pr.confidence)
+
+    # Step 0.5 — keep only the top-K highest-confidence frames before voting.
+    # Voting over the whole track lets many low-confidence (blurry/angled) frames —
+    # where consonants misread as digits — dominate the count-group choice and the
+    # per-slot vote, producing digit-only assembled reads. Restricting the vote to the
+    # same high-confidence cream that training captures keeps the assembled read aligned
+    # with what the model actually reads well. Consonant-bearing frames are already
+    # preferred above, so this never drops the only consonant evidence in favour of digits.
+    if PLATE_ASSEMBLE_TOP_K > 0 and len(usable) > PLATE_ASSEMBLE_TOP_K:
+        usable = sorted(usable, key=lambda pr: pr.confidence, reverse=True)[:PLATE_ASSEMBLE_TOP_K]
 
     # Step 1 — group surviving frames by char count
     count_groups: dict = defaultdict(list)

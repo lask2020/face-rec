@@ -120,6 +120,10 @@ class AIWorkerWindow(QMainWindow):
         self.plate_track_timeout_value = 6.0
         self.plate_track_max_duration_value = 12.0
         self.training_capture_conf_min_value = 0.80
+        self.plate_assemble_top_k_value = 5
+        self.finetune_batch_value = 32
+        self.finetune_lr0_value = 0.001
+        self.finetune_freeze_value = 10
         self._load_config()
 
         self.setup_ui()
@@ -136,6 +140,10 @@ class AIWorkerWindow(QMainWindow):
                     self.plate_track_timeout_value = config.get("plate_track_timeout", self.plate_track_timeout_value)
                     self.plate_track_max_duration_value = config.get("plate_track_max_duration", self.plate_track_max_duration_value)
                     self.training_capture_conf_min_value = config.get("training_capture_conf_min", self.training_capture_conf_min_value)
+                    self.plate_assemble_top_k_value = config.get("plate_assemble_top_k", self.plate_assemble_top_k_value)
+                    self.finetune_batch_value = config.get("finetune_batch", self.finetune_batch_value)
+                    self.finetune_lr0_value = config.get("finetune_lr0", self.finetune_lr0_value)
+                    self.finetune_freeze_value = config.get("finetune_freeze", self.finetune_freeze_value)
             except Exception as e:
                 logging.error(f"Failed to load config: {e}")
 
@@ -149,6 +157,10 @@ class AIWorkerWindow(QMainWindow):
                     "plate_track_timeout": self.plate_track_timeout_spin.value(),
                     "plate_track_max_duration": self.plate_track_max_duration_spin.value(),
                     "training_capture_conf_min": self.training_capture_conf_min_spin.value(),
+                    "plate_assemble_top_k": self.plate_assemble_top_k_spin.value(),
+                    "finetune_batch": self.finetune_batch_spin.value(),
+                    "finetune_lr0": self.finetune_lr0_spin.value(),
+                    "finetune_freeze": self.finetune_freeze_spin.value(),
                 }, f, indent=4)
         except Exception as e:
             logging.error(f"Failed to save config: {e}")
@@ -285,12 +297,81 @@ class AIWorkerWindow(QMainWindow):
         self.training_capture_conf_min_spin.setValue(float(self.training_capture_conf_min_value))
         self.training_capture_conf_min_spin.valueChanged.connect(self._save_config)
 
+        # Assemble Top-K
+        topk_lbl = QLabel("Assemble Top-K:")
+        topk_lbl.setFont(QFont("Helvetica", 13))
+        topk_lbl.setToolTip("Vote over only the top-K highest-confidence frames when assembling a plate read. "
+                            "Keeps blurry frames (where consonants misread as digits) out of the vote. "
+                            "Set to 0 to vote over all frames. (PLATE_ASSEMBLE_TOP_K)")
+        self.plate_assemble_top_k_spin = QSpinBox()
+        self.plate_assemble_top_k_spin.setFont(QFont("Helvetica", 13))
+        self.plate_assemble_top_k_spin.setRange(0, 50)
+        self.plate_assemble_top_k_spin.setSpecialValueText("All frames")
+        self.plate_assemble_top_k_spin.setValue(int(self.plate_assemble_top_k_value))
+        self.plate_assemble_top_k_spin.valueChanged.connect(self._save_config)
+
         plate_form.addWidget(maxdur_lbl, 1, 0)
         plate_form.addWidget(self.plate_track_max_duration_spin, 1, 1)
         plate_form.addWidget(conf_min_lbl, 1, 2)
         plate_form.addWidget(self.training_capture_conf_min_spin, 1, 3)
+        plate_form.addWidget(topk_lbl, 2, 0)
+        plate_form.addWidget(self.plate_assemble_top_k_spin, 2, 1)
 
         main_layout.addLayout(plate_form)
+
+        # ── Fine-tune Settings ──
+        ft_title = QLabel("🎓 Fine-tune")
+        ft_title.setFont(QFont("Helvetica", 13, QFont.Weight.Bold))
+        main_layout.addWidget(ft_title)
+
+        ft_form = QGridLayout()
+        ft_form.setColumnStretch(1, 1)
+        ft_form.setColumnStretch(3, 1)
+
+        # Batch size
+        batch_lbl = QLabel("Batch Size:")
+        batch_lbl.setFont(QFont("Helvetica", 13))
+        batch_lbl.setToolTip("Images per training step. Larger = more stable gradients but more memory.\n"
+                             "MPS 48GB: 32 is safe. GPU 8GB: 16. CPU: 8. (FINETUNE_BATCH)")
+        self.finetune_batch_spin = QSpinBox()
+        self.finetune_batch_spin.setFont(QFont("Helvetica", 13))
+        self.finetune_batch_spin.setRange(1, 128)
+        self.finetune_batch_spin.setValue(int(self.finetune_batch_value))
+        self.finetune_batch_spin.valueChanged.connect(self._save_config)
+
+        # Learning rate
+        lr_lbl = QLabel("Learning Rate:")
+        lr_lbl.setFont(QFont("Helvetica", 13))
+        lr_lbl.setToolTip("Initial LR for fine-tuning. Lower = less catastrophic forgetting.\n"
+                          "Default 0.001 (10x lower than scratch). (FINETUNE_LR0)")
+        self.finetune_lr0_spin = QDoubleSpinBox()
+        self.finetune_lr0_spin.setFont(QFont("Helvetica", 13))
+        self.finetune_lr0_spin.setRange(0.00001, 0.1)
+        self.finetune_lr0_spin.setSingleStep(0.0001)
+        self.finetune_lr0_spin.setDecimals(5)
+        self.finetune_lr0_spin.setValue(float(self.finetune_lr0_value))
+        self.finetune_lr0_spin.valueChanged.connect(self._save_config)
+
+        # Freeze layers
+        freeze_lbl = QLabel("Freeze Layers:")
+        freeze_lbl.setFont(QFont("Helvetica", 13))
+        freeze_lbl.setToolTip("Freeze the first N backbone layers during fine-tuning.\n"
+                              "Prevents catastrophic forgetting of learned features.\n"
+                              "Default 10. Set 0 to unfreeze all. (FINETUNE_FREEZE)")
+        self.finetune_freeze_spin = QSpinBox()
+        self.finetune_freeze_spin.setFont(QFont("Helvetica", 13))
+        self.finetune_freeze_spin.setRange(0, 50)
+        self.finetune_freeze_spin.setValue(int(self.finetune_freeze_value))
+        self.finetune_freeze_spin.valueChanged.connect(self._save_config)
+
+        ft_form.addWidget(batch_lbl, 0, 0)
+        ft_form.addWidget(self.finetune_batch_spin, 0, 1)
+        ft_form.addWidget(lr_lbl, 0, 2)
+        ft_form.addWidget(self.finetune_lr0_spin, 0, 3)
+        ft_form.addWidget(freeze_lbl, 1, 0)
+        ft_form.addWidget(self.finetune_freeze_spin, 1, 1)
+
+        main_layout.addLayout(ft_form)
 
         # ── Separator ──
         line = QFrame()
@@ -354,6 +435,10 @@ class AIWorkerWindow(QMainWindow):
             "PLATE_TRACK_TIMEOUT": self.plate_track_timeout_spin.value(),
             "PLATE_TRACK_MAX_DURATION": self.plate_track_max_duration_spin.value(),
             "TRAINING_CAPTURE_CONF_MIN": self.training_capture_conf_min_spin.value(),
+            "PLATE_ASSEMBLE_TOP_K": self.plate_assemble_top_k_spin.value(),
+            "FINETUNE_BATCH": self.finetune_batch_spin.value(),
+            "FINETUNE_LR0": self.finetune_lr0_spin.value(),
+            "FINETUNE_FREEZE": self.finetune_freeze_spin.value(),
         }
 
         self.url_entry.setEnabled(False)

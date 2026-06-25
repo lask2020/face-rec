@@ -52,8 +52,33 @@ cp facerec.proto backend/facerec.proto
 - Spatial bbox matching: IoU ≥ `PLATE_IOU_THRESH` (0.4) or center-distance fallback
 - Accumulates **all frames** in `frame_results: list[PlateResult]`
 - Flushed on timeout (`PLATE_TRACK_TIMEOUT=6s`) or max duration (`PLATE_TRACK_MAX_DURATION=12s`)
-- `_assemble_multi_frame()` — majority-vote on char count, per-slot best confidence, province by majority
+- `_assemble_multi_frame()` — combines all frames of a track into one read:
+  - **Step 0 (quality gate, added):** drop structurally-implausible frames *before* voting —
+    keep only frames with char count 2..8, and if any frame saw a Thai consonant, discard
+    the consonant-less (pure-digit) frames as detector noise. Prevents garbage frames
+    (all-digit / absurd-length like `377131565`) from polluting the vote.
+  - **Count group** chosen by **highest total confidence** (not most frames) — a few
+    high-conf reads of the right length beat many low-conf garbage frames.
+  - Per-slot best confidence across the chosen group, province by majority vote.
 - **Fuzzy cooldown**: Levenshtein distance ≤ `PLATE_FUZZY_DIST` (default 2) prevents duplicate DB records from OCR-variant plates
+
+### Plate text validation (`backend/app/license_plate/validate.py`)
+- `validate()` → `(is_valid, normalized, conf)` matches old/new/motorcycle Thai formats (requires a real hyphen + ≥2 consonants).
+- `correct_common_errors()` — **conservative only**: hyphen recovery + a few literal artifact
+  fixes (`เ→4`, `B→8`, `l/I→1`) that all require two real Thai consonants to already be present.
+- **No consonant fabrication**: the old `_map_to_thai` / `SHAPE_CANDIDATES` digit→consonant
+  guesser was **removed** — it invented plausible-but-wrong plates from digit-only OCR reads
+  (e.g. `133327` → `1-รร-327` at conf 0.87). If the OCR reads a consonant slot as a number,
+  the read is dropped (`plate_number=None`) rather than guessed.
+- **Confidence penalty** (`PLATE_CORRECTION_CONF_PENALTY`, default 0.8): applied in BOTH
+  `engine.py` and `_assemble_multi_frame` when a plate only validated *after* a real
+  character-changing correction (hyphen-only insertion is cosmetic and NOT penalized), so
+  corrected reads never outrank clean reads when sorting/filtering by confidence.
+
+> **`plate_detection_logs` vs `plate_training_samples`**: detection logs store the
+> *assembled + validated* read (`plate_number` normalized, `raw_text` pre-validation);
+> training samples store *per-frame raw OCR* (no validator, no correction) — which is why
+> training data looks "cleaner" (it's what the model actually saw).
 
 ### Key env vars (Python worker)
 | Var | Default | Purpose |
@@ -63,7 +88,9 @@ cp facerec.proto backend/facerec.proto
 | `PLATE_TRACK_MAX_DURATION` | `12.0` | Max seconds to accumulate a track |
 | `MIN_PLATE_FLUSH_CONF` | `0.25` | Discard tracks below this confidence |
 | `MIN_PLATE_HITS` | `1` | Minimum frames required to flush |
-| `TRAINING_CAPTURE_CONF_MAX` | `0.65` | Frames below this go to training dataset |
+| `PLATE_CORRECTION_CONF_PENALTY` | `0.8` | Confidence multiplier when a plate validated only after a real OCR-artifact correction |
+| `TRAINING_CAPTURE_CONF_MIN` | `0.45` | Frames at/above this conf are captured for training review |
+| `TRAINING_MAX_FRAMES_PER_TRACK` | `3` | Max training frames sent per track |
 
 ---
 
@@ -72,7 +99,7 @@ cp facerec.proto backend/facerec.proto
 Low-confidence plate crops are automatically captured and saved for OCR retraining.
 
 ### Data flow
-1. Python worker: frames with `confidence < TRAINING_CAPTURE_CONF_MAX` → `PlateTrainingFrame` in gRPC `InferenceResult`
+1. Python worker: frames with `confidence >= TRAINING_CAPTURE_CONF_MIN` (and char-level data) → `PlateTrainingFrame` in gRPC `InferenceResult` (top-N by confidence, capped at `TRAINING_MAX_FRAMES_PER_TRACK`)
 2. Go: `saveTrainingFrames()` uploads JPEG to S3 (`training_cam{id}_{ts}_{idx}.jpg`), inserts `PlateTrainingSample` row
 3. Frontend `/training` page: review grid → approve / reject / correct text
 4. Export ZIP: YOLO-format dataset (train 90% / valid 10%), `data.yaml` with 129 `MASTER_CLASSES`

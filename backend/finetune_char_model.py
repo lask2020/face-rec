@@ -490,9 +490,17 @@ def _run(args, tmp_root, YOLO, torch):
         # disk I/O from epoch 2 onward on CPU/MPS where there's no GPU pipeline.
         is_small_gpu = is_cpu or (dev == "mps")
         train_imgsz = args.imgsz
-        # 640px uses ~4x the memory of 320px, so halve the CPU/MPS batch to stay
-        # within RAM when caching the dataset.
-        train_batch = 8 if is_small_gpu else args.batch
+        # Batch size: env override wins; otherwise MPS/CPU default 32 (MPS has unified
+        # memory so the old "halve for safety" cap was overly conservative — 32 uses
+        # ~6-8 GB of a typical 16-48 GB pool), GPU uses args.batch (CLI default 8,
+        # bumped via --batch or FINETUNE_BATCH).
+        _env_batch = os.environ.get("FINETUNE_BATCH", "").strip()
+        if _env_batch:
+            train_batch = int(_env_batch)
+        elif is_small_gpu:
+            train_batch = 32
+        else:
+            train_batch = args.batch
         train_cache = "ram" if is_small_gpu else False
 
         # Fine-tune (not train-from-scratch) hyperparameters. The previous run
