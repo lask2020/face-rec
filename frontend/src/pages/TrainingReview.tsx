@@ -301,11 +301,12 @@ interface SampleCardProps {
   onApproveTrack: () => void;
   onReject: () => void;
   onSaveLabels: (charLabels: CharLabel[]) => void;
+  onApplyAI: () => void;
   aiResult?: AIReviewResult | null;
 }
 
 function SampleCard({
-  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels, aiResult,
+  sample, selected, onToggleSelect, onApprove, onApproveTrack, onReject, onSaveLabels, onApplyAI, aiResult,
 }: SampleCardProps) {
   const [labels, setLabels] = useState<CharLabel[]>(() => parsedLabels(sample.char_labels));
   const [selectedCharIdx, setSelectedCharIdx] = useState<number | null>(null);
@@ -407,7 +408,7 @@ function SampleCard({
           }}>
             AI {aiResult.suggestion}
           </span>
-          <span style={{ fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+          <span style={{ fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.4, flex: 1 }}>
             {aiResult.corrected_text && aiResult.corrected_text !== sample.raw_text && (
               <span style={{ color: '#f59e0b', fontWeight: 600, marginRight: 4 }}>
                 → {aiResult.corrected_text}
@@ -415,6 +416,19 @@ function SampleCard({
             )}
             {aiResult.reason}
           </span>
+          {(aiResult.corrected_text || aiResult.corrected_labels?.length) && (
+            <button
+              onClick={onApplyAI}
+              title="บันทึก labels/text ที่ AI แก้ไว้ โดยยังไม่เปลี่ยนสถานะ"
+              style={{
+                flexShrink: 0, fontSize: 10, padding: '2px 7px', borderRadius: 3,
+                border: '1px solid #7c3aed', background: 'rgba(124,58,237,0.2)',
+                color: '#a78bfa', cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap',
+              }}
+            >
+              Apply labels
+            </button>
+          )}
         </div>
       )}
 
@@ -752,6 +766,25 @@ export default function TrainingReview() {
     } catch { /* ignore */ } finally {
       setSavingKey(false);
     }
+  };
+
+  const handleApplyAIToSample = async (id: number) => {
+    const r = aiResults.get(id);
+    if (!r) return;
+    const update: { corrected_text?: string; char_labels?: string } = {};
+    if (r.corrected_text) update.corrected_text = r.corrected_text;
+    if (r.corrected_labels?.length) update.char_labels = JSON.stringify(r.corrected_labels);
+    if (!update.corrected_text && !update.char_labels) return;
+    await trainingApi.update(id, update);
+    // Reflect new labels locally so the canvas redraws immediately
+    setSamples((prev) => prev.map((s) => {
+      if (s.id !== id) return s;
+      return {
+        ...s,
+        ...(update.corrected_text ? { corrected_text: update.corrected_text } : {}),
+        ...(update.char_labels ? { char_labels: update.char_labels } : {}),
+      };
+    }));
   };
 
   const handleSaveGeminiKey = async () => {
@@ -1403,6 +1436,7 @@ export default function TrainingReview() {
               onApproveTrack={() => handleApproveTrack(s.track_id)}
               onReject={() => handleReject(s.id)}
               onSaveLabels={(labels) => handleSaveLabels(s.id, labels)}
+              onApplyAI={() => handleApplyAIToSample(s.id)}
               aiResult={aiResults.get(s.id) ?? null}
             />
           ))}
