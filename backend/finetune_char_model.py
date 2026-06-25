@@ -483,12 +483,29 @@ def _run(args, tmp_root, YOLO, torch):
             and dev not in ("cpu", "mps")
         )
 
-        # Plate characters are small — 320px is sufficient and ~4x faster than 640.
-        # cache="ram" eliminates disk I/O from epoch 2 onward.
+        # Always train at the export resolution (args.imgsz, default 640) so the
+        # ONNX export below matches what the model actually learned. Training at
+        # 320 then exporting/​infering at 640 made plate chars appear ~2x larger
+        # than the model ever saw → near-zero detections. cache="ram" eliminates
+        # disk I/O from epoch 2 onward on CPU/MPS where there's no GPU pipeline.
         is_small_gpu = is_cpu or (dev == "mps")
-        train_imgsz = 320 if is_small_gpu else args.imgsz
-        train_batch = 16  if is_small_gpu else args.batch
+        train_imgsz = args.imgsz
+        # 640px uses ~4x the memory of 320px, so halve the CPU/MPS batch to stay
+        # within RAM when caching the dataset.
+        train_batch = 8 if is_small_gpu else args.batch
         train_cache = "ram" if is_small_gpu else False
+
+        # Fine-tune (not train-from-scratch) hyperparameters. The previous run
+        # used ultralytics defaults (lr0=0.01, no frozen layers), which on a
+        # small CCTV-only dataset rewrote the whole 129-class detector and caused
+        # catastrophic forgetting — the model "un-learned" every character it
+        # wasn't shown in the new data and detected nothing.
+        #   - lr0=0.001  : 10x lower LR so base weights drift gently
+        #   - freeze=10  : freeze the backbone (feature extractor); only retrain
+        #                  the detection head on the new samples
+        # Both are env-overridable for experimentation.
+        finetune_lr0    = float(os.environ.get("FINETUNE_LR0", "0.001"))
+        finetune_freeze = int(os.environ.get("FINETUNE_FREEZE", "10"))
 
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
@@ -509,6 +526,8 @@ def _run(args, tmp_root, YOLO, torch):
                 cache=train_cache,
                 plots=False,
                 amp=use_amp,
+                lr0=finetune_lr0,
+                freeze=finetune_freeze,
             )
         finally:
             # Release GPU memory before returning (critical for DirectML — no empty_cache()).

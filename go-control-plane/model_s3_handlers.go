@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -16,6 +17,45 @@ import (
 )
 
 func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
+
+// fetchModelFromS3 downloads a single model file from S3 ModelsBucket into dest.
+// Used when the control plane needs a model that lives only in S3 (the canonical
+// store) and not on its local staging disk — e.g. taking a rollback snapshot on
+// a control plane that has never run a fine-tune locally. Returns an error if S3
+// is unconfigured or the object does not exist.
+func fetchModelFromS3(name, dest string) error {
+	if S3Client == nil {
+		return fmt.Errorf("S3 not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	obj, err := S3Client.GetObject(ctx, ModelsBucket, name, minio.GetObjectOptions{})
+	if err != nil {
+		return err
+	}
+	defer obj.Close()
+	// GetObject is lazy — Stat surfaces a missing-object error before we write.
+	if _, err := obj.Stat(); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	tmp := dest + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, obj); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	f.Close()
+	return os.Rename(tmp, dest)
+}
 
 // modelFileNames lists all model files that are managed in S3.
 var modelFileNames = []string{

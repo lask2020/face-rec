@@ -1086,8 +1086,24 @@ func snapshotModelVersion(c *fiber.Ctx) error {
 	modelsDir := resolveModelsDir()
 	ptSrc := filepath.Join(modelsDir, "thai_char_yolo26s.pt")
 	onnxSrc := filepath.Join(modelsDir, "thai_char_yolo26s.onnx")
+
+	// The active model's canonical store is S3 — the control plane's local
+	// data/models/ is only a staging dir and is often empty (the model physically
+	// lives on the GPU worker). Pull the active files from S3 so a rollback
+	// snapshot can be taken even when nothing is on local disk.
+	if !fileExists(ptSrc) {
+		if err := fetchModelFromS3("thai_char_yolo26s.pt", ptSrc); err != nil {
+			log.Printf("[ModelSnapshot] could not fetch thai_char_yolo26s.pt from S3: %v", err)
+		}
+	}
+	if !fileExists(onnxSrc) {
+		if err := fetchModelFromS3("thai_char_yolo26s.onnx", onnxSrc); err != nil {
+			log.Printf("[ModelSnapshot] could not fetch thai_char_yolo26s.onnx from S3: %v", err)
+		}
+	}
+
 	if !fileExists(ptSrc) && !fileExists(onnxSrc) {
-		return c.Status(404).JSON(fiber.Map{"error": "no active char model to snapshot"})
+		return c.Status(404).JSON(fiber.Map{"error": "no active char model found on disk or in S3 to snapshot"})
 	}
 
 	version := time.Now().Format("20060102_150405")
