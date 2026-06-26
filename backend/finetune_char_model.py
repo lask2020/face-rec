@@ -642,6 +642,19 @@ def _run(args, tmp_root, YOLO, torch):
         finetune_freeze   = int(os.environ.get("FINETUNE_FREEZE", "10"))
         finetune_patience = int(os.environ.get("FINETUNE_PATIENCE", "50"))
 
+        # Optimizer: ultralytics' default (optimizer="auto") auto-selects MuSGD
+        # (the Muon optimizer) on long runs. Muon's Newton-Schulz step casts
+        # gradients to bfloat16 (optim/muon.py: `X = G.bfloat16()`), and DirectML
+        # has no bfloat16 support → fatal "Invalid or unsupported data type
+        # BFloat16" that aborts the whole process (not catchable as an exception).
+        # Force AdamW on DirectML to stay off the bfloat16 path; this also makes
+        # ultralytics respect our explicit lr0 (it ignores lr0 under "auto").
+        # Env-overridable for experimentation on other backends.
+        _default_optimizer = "AdamW" if is_directml else "auto"
+        finetune_optimizer = os.environ.get("FINETUNE_OPTIMIZER", _default_optimizer)
+        if is_directml:
+            emit({"type": "info", "message": f"DirectML: forcing optimizer={finetune_optimizer} (Muon/bfloat16 unsupported)"})
+
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
         try:
@@ -663,6 +676,7 @@ def _run(args, tmp_root, YOLO, torch):
                 amp=use_amp,
                 lr0=finetune_lr0,
                 freeze=finetune_freeze,
+                optimizer=finetune_optimizer,
             )
         finally:
             # Release GPU memory before returning (critical for DirectML — no empty_cache()).
