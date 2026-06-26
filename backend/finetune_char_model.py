@@ -140,13 +140,28 @@ DATASET_SPECIFIC_ALIASES = {
     },
 }
 
-# Fixed Roboflow datasets to merge (folder names under ROBOFLOW_DATASET_BASE)
+# Fixed Roboflow datasets to merge (folder names under ROBOFLOW_DATASET_BASE).
+# These are large, broad, out-of-domain (clean color plates) — merged at ×1.
 FIXED_DATASETS = [
     "Thai-License-Plate-Character-Recognition-10",
     "Thai-LNPR-3",
     "LRU-License-Plate-1",
     "license-plate-charecter-5",
 ]
+
+# Real in-domain CCTV data to OVERSAMPLE so the ~31k Roboflow images don't drown
+# it out. cctv_character_dataset_all is the original CCTV set used to train the
+# baseline; the Go-exported approved samples are oversampled separately (they
+# arrive as args.data). Already in MASTER_CLASSES order — no remapping needed, so
+# they're referenced directly by image dir (ultralytics resolves labels/ alongside).
+# Folder names under ROBOFLOW_DATASET_BASE; missing dirs are skipped.
+CCTV_REPLAY_DATASETS = [
+    "cctv_character_dataset_all",
+]
+
+# How many times to replay the real CCTV data. 952 CCTV imgs × 8 ≈ 7.6k → ~19% of
+# the combined set (vs ~3% at ×1). Env-overridable for experimentation.
+CCTV_OVERSAMPLE = int(os.environ.get("CCTV_OVERSAMPLE", "8"))
 
 ROBOFLOW_SOURCES = [
     {"folder": "Thai-License-Plate-Character-Recognition-10", "workspace": "meenyossakorn",          "project": "thai-license-plate-character-recognition", "version": 10},
@@ -313,15 +328,24 @@ def merge_roboflow_datasets(base_dir: str, out_dir: str) -> str | None:
     return yaml_path
 
 
-def build_combined_yaml(cctv_yaml: str, ext_yaml: str, out_dir: str) -> str:
+def build_combined_yaml(cctv_yaml: str, ext_yaml: str | None, out_dir: str,
+                        cctv_oversample: int = 1,
+                        cctv_extra_dirs: list[str] | None = None) -> str:
     """
-    Combine CCTV data.yaml + external data.yaml into a single multi-path yaml.
-    Both must use MASTER_CLASSES (same nc/names).
+    Combine CCTV data.yaml + (optional) external data.yaml into one multi-path yaml.
+    All sources must use MASTER_CLASSES (same nc/names).
+
+    Real CCTV data (the exported approved samples + cctv_extra_dirs) is repeated
+    `cctv_oversample` times in the train list so the much larger out-of-domain
+    Roboflow data doesn't drown it out. ultralytics' get_img_files concatenates
+    (no dedup), so a duplicated path multiplies that path's images.
     """
     with open(cctv_yaml, encoding="utf-8") as f:
         cctv = yaml.safe_load(f)
-    with open(ext_yaml, encoding="utf-8") as f:
-        ext = yaml.safe_load(f)
+    ext = {}
+    if ext_yaml:
+        with open(ext_yaml, encoding="utf-8") as f:
+            ext = yaml.safe_load(f)
 
     def as_list(v, base):
         if not v:
@@ -330,15 +354,25 @@ def build_combined_yaml(cctv_yaml: str, ext_yaml: str, out_dir: str) -> str:
         return [p if os.path.isabs(p) else os.path.join(base, p) for p in items]
 
     cctv_dir = os.path.dirname(os.path.abspath(cctv_yaml))
-    ext_dir  = os.path.dirname(os.path.abspath(ext_yaml))
+    ext_dir  = os.path.dirname(os.path.abspath(ext_yaml)) if ext_yaml else ""
+
+    factor = max(1, cctv_oversample)
+    # Real in-domain CCTV image dirs: exported samples + extra replay datasets.
+    cctv_train = as_list(cctv.get("train"), cctv_dir) + [os.path.abspath(d) for d in (cctv_extra_dirs or [])]
+    cctv_train_os = cctv_train * factor  # repeat each path `factor` times → oversample
+
+    ext_train = as_list(ext.get("train"), ext_dir)
 
     combined = {
         "nc":    cctv["nc"],
         "names": cctv["names"],
-        "train": as_list(cctv.get("train"), cctv_dir) + as_list(ext.get("train"), ext_dir),
+        "train": cctv_train_os + ext_train,
         "val":   as_list(cctv.get("val", cctv.get("valid")), cctv_dir) +
                  as_list(ext.get("val",  ext.get("valid")),  ext_dir),
     }
+    emit({"type": "info",
+          "message": f"CCTV oversample ×{factor}: {len(cctv_train)} CCTV dir(s) → "
+                     f"{len(cctv_train_os)} train entries (+{len(ext_train)} Roboflow)"})
     out = os.path.join(out_dir, "combined_data.yaml")
     with open(out, "w", encoding="utf-8") as f:
         yaml.dump(combined, f, default_flow_style=False, allow_unicode=True)
@@ -390,13 +424,26 @@ def _run(args, tmp_root, YOLO, torch):
     emit({"type": "info", "message": f"Merging Roboflow datasets from {roboflow_base} ..."})
     ext_yaml = merge_roboflow_datasets(roboflow_base, ext_dir)
 
-    # ── 2. Combine with CCTV data ─────────────────────────────────────────────
+    # ── 2. Combine with CCTV data + oversample real CCTV ──────────────────────
+    # Collect in-domain CCTV replay dirs (already in MASTER_CLASSES order).
+    cctv_extra_dirs = []
+    for folder in CCTV_REPLAY_DATASETS:
+        img_dir = os.path.join(roboflow_base, folder, "train", "images")
+        if os.path.isdir(img_dir):
+            cctv_extra_dirs.append(os.path.abspath(img_dir))
+            emit({"type": "info", "message": f"[cctv-replay] {folder} included (×{CCTV_OVERSAMPLE})"})
+        else:
+            emit({"type": "info", "message": f"[cctv-replay] {folder} not found — skipping"})
+
+    # Always go through build_combined_yaml so CCTV oversampling applies even when
+    # no Roboflow data is present (ext_yaml=None handled inside).
+    data_yaml = build_combined_yaml(args.data, ext_yaml, tmp_root,
+                                    cctv_oversample=CCTV_OVERSAMPLE,
+                                    cctv_extra_dirs=cctv_extra_dirs)
     if ext_yaml:
-        data_yaml = build_combined_yaml(args.data, ext_yaml, tmp_root)
         emit({"type": "info", "message": "Combined CCTV + Roboflow datasets ready"})
     else:
-        data_yaml = args.data
-        emit({"type": "info", "message": "No external datasets found — training on CCTV only"})
+        emit({"type": "info", "message": "No Roboflow datasets — CCTV only (oversampled)"})
 
     total_epochs = args.epochs
 

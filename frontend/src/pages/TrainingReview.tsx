@@ -277,7 +277,7 @@ function ClassDistChart({ data }: { data: { class_name: string; count: number }[
         <div key={item.class_name} style={{ textAlign: 'center', width: 28 }}>
           <div
             style={{
-              background: 'var(--accent)',
+              background: 'var(--accent-purple)',
               width: '100%',
               height: Math.max(4, (item.count / max) * 60),
               borderRadius: 2,
