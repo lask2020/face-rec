@@ -518,6 +518,32 @@ def _run(args, tmp_root, YOLO, torch):
         torch.unique = _safe_unique
         return _orig
 
+    def _patch_directml_scatter_add():
+        """Patch Tensor.scatter_add_ so it works on DirectML.
+
+        Newer ultralytics builds the per-image target offsets in
+        ``v8DetectionLoss.preprocess`` with
+            offsets.scatter_add_(0, batch_idx + 1, torch.ones_like(batch_idx))
+        DirectML has no working scatter_add_ kernel — the call raises
+        ``RuntimeError: The parameter is incorrect.`` and (because it's not an
+        OOM) drops the whole run to CPU. Offload the op to CPU and copy the
+        result back into the original (in-place) tensor, same technique as
+        _patch_directml_unique above. It's a tiny index-counting op on target
+        data (no gradients), so the CPU round-trip is negligible."""
+        _orig = torch.Tensor.scatter_add_
+
+        def _safe_scatter_add_(self, dim, index, src):
+            if str(self.device).startswith("privateuseone"):
+                cpu_self = self.cpu()
+                cpu_self.scatter_add_(dim, index.cpu(),
+                                      src.cpu() if torch.is_tensor(src) else src)
+                self.copy_(cpu_self)
+                return self
+            return _orig(self, dim, index, src)
+
+        torch.Tensor.scatter_add_ = _safe_scatter_add_
+        return _orig
+
     def _patch_mps_assigner():
         """Offload YOLO's TaskAlignedAssigner to CPU on MPS.
 
@@ -556,9 +582,12 @@ def _run(args, tmp_root, YOLO, torch):
         )
 
         orig_unique = None
+        orig_scatter_add = None
         if is_directml:
             emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
             orig_unique = _patch_directml_unique()
+            emit({"type": "info", "message": "Applying DirectML patch for scatter_add_ ..."})
+            orig_scatter_add = _patch_directml_scatter_add()
 
         orig_assigner = None
         if is_mps:
@@ -642,6 +671,8 @@ def _run(args, tmp_root, YOLO, torch):
                 torch.cuda.empty_cache()
             if orig_unique is not None:
                 torch.unique = orig_unique
+            if orig_scatter_add is not None:
+                torch.Tensor.scatter_add_ = orig_scatter_add
             if orig_assigner is not None:
                 from ultralytics.utils.tal import TaskAlignedAssigner
                 TaskAlignedAssigner.forward = orig_assigner
