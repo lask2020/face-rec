@@ -351,7 +351,7 @@ class AIWorkerWindow(QMainWindow):
                              "MPS 48GB: 32 is safe. GPU 8GB: 16. CPU: 8. (FINETUNE_BATCH)")
         self.finetune_batch_spin = QSpinBox()
         self.finetune_batch_spin.setFont(QFont("Helvetica", 13))
-        self.finetune_batch_spin.setRange(1, 128)
+        self.finetune_batch_spin.setRange(1, 512)
         self.finetune_batch_spin.setValue(int(self.finetune_batch_value))
         self.finetune_batch_spin.valueChanged.connect(self._save_config)
 

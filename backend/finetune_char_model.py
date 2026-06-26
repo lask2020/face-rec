@@ -492,7 +492,11 @@ def _run(args, tmp_root, YOLO, torch):
 
     # In a PyInstaller frozen build, dataloader subprocesses re-launch the exe,
     # which is unsafe. Load data in the main process (workers=0) when frozen.
-    train_workers = 0 if getattr(sys, "frozen", False) else 2
+    if getattr(sys, "frozen", False):
+        train_workers = 0
+    else:
+        _num_gpus = len(device.split(",")) if isinstance(device, str) and "," in device else 1
+        train_workers = int(os.environ.get("FINETUNE_WORKERS", str(4 * _num_gpus)))
 
     def _patch_directml_unique():
         """Patch torch.unique so return_counts=True works on DirectML.
@@ -552,9 +556,9 @@ def _run(args, tmp_root, YOLO, torch):
         )
 
         orig_unique = None
-        if is_directml:
-            emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
-            orig_unique = _patch_directml_unique()
+        # if is_directml:
+        #     emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
+        #     orig_unique = _patch_directml_unique()
 
         orig_assigner = None
         if is_mps:
@@ -588,7 +592,7 @@ def _run(args, tmp_root, YOLO, torch):
             train_batch = 32
         else:
             train_batch = args.batch
-        train_cache = "disk" if is_small_gpu else False
+        train_cache = os.environ.get("FINETUNE_CACHE", "disk")
 
         # Fine-tune (not train-from-scratch) hyperparameters. The previous run
         # used ultralytics defaults (lr0=0.01, no frozen layers), which on a
@@ -599,8 +603,9 @@ def _run(args, tmp_root, YOLO, torch):
         #   - freeze=10  : freeze the backbone (feature extractor); only retrain
         #                  the detection head on the new samples
         # Both are env-overridable for experimentation.
-        finetune_lr0    = float(os.environ.get("FINETUNE_LR0", "0.001"))
-        finetune_freeze = int(os.environ.get("FINETUNE_FREEZE", "10"))
+        finetune_lr0      = float(os.environ.get("FINETUNE_LR0", "0.001"))
+        finetune_freeze   = int(os.environ.get("FINETUNE_FREEZE", "10"))
+        finetune_patience = int(os.environ.get("FINETUNE_PATIENCE", "50"))
 
         model = YOLO(args.base_model)
         model.add_callback("on_train_epoch_end", on_train_epoch_end)
@@ -614,7 +619,7 @@ def _run(args, tmp_root, YOLO, torch):
                 project=train_project,
                 name=train_name,
                 exist_ok=True,
-                patience=10,
+                patience=finetune_patience,
                 save=True,
                 verbose=False,
                 workers=train_workers,
