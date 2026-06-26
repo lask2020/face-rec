@@ -544,28 +544,34 @@ def _run(args, tmp_root, YOLO, torch):
         torch.Tensor.scatter_add_ = _safe_scatter_add_
         return _orig
 
-    def _patch_mps_assigner():
-        """Offload YOLO's TaskAlignedAssigner to CPU on MPS.
+    def _patch_assigner_cpu_offload():
+        """Offload YOLO's TaskAlignedAssigner to CPU on MPS and DirectML.
 
-        PyTorch MPS has a bug in the advanced indexing used by
+        MPS: a bug in the advanced indexing used by
         ``TaskAlignedAssigner.get_box_metrics`` (tal.py):
             bbox_scores[mask_gt] = pd_scores[ind[0], :, ind[1]][mask_gt]
-        produces a wrong-shaped result on MPS → 'shape mismatch: value tensor
-        of shape [...] cannot be broadcast to indexing result of shape [...]'.
+        produces a wrong-shaped result → 'shape mismatch: value tensor of
+        shape [...] cannot be broadcast to indexing result of shape [...]'.
         ``PYTORCH_ENABLE_MPS_FALLBACK`` does NOT catch it because the op *is*
-        implemented on MPS — it just returns the wrong shape. Ultralytics' own
-        forward() only falls back to CPU on 'out of memory' errors, so this one
-        re-raises and drops the whole run to CPU.
+        implemented on MPS — it just returns the wrong shape.
 
-        The assigner runs under @torch.no_grad() (pure target assignment, no
-        gradients) and is cheap relative to the conv backbone, so we run it on
-        CPU and copy results back to MPS — keeping the bulk of training on GPU."""
+        DirectML: ``select_highest_overlaps`` does
+            topk_idx.scatter_(-1, max_overlaps_idx, 1.0)
+        which raises 'DirectML scatter doesn't allow partially modified
+        dimensions.' — the scatter_ kernel can't handle this index shape.
+
+        In both cases ultralytics' own forward() only falls back to CPU on
+        'out of memory' errors, so this one re-raises and drops the whole run
+        to CPU. The assigner runs under @torch.no_grad() (pure target
+        assignment, no gradients) and is cheap relative to the conv backbone,
+        so we run it on CPU and copy results back to the GPU — keeping the bulk
+        of training on the accelerator."""
         from ultralytics.utils.tal import TaskAlignedAssigner
         _orig = TaskAlignedAssigner.forward
 
         def _cpu_forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
             dev_in = pd_scores.device
-            if dev_in.type == "mps":
+            if dev_in.type == "mps" or str(dev_in).startswith("privateuseone"):
                 result = _orig(self, pd_scores.cpu(), pd_bboxes.cpu(), anc_points.cpu(),
                                gt_labels.cpu(), gt_bboxes.cpu(), mask_gt.cpu())
                 return tuple(t.to(dev_in) if torch.is_tensor(t) else t for t in result)
@@ -590,9 +596,9 @@ def _run(args, tmp_root, YOLO, torch):
             orig_scatter_add = _patch_directml_scatter_add()
 
         orig_assigner = None
-        if is_mps:
-            emit({"type": "info", "message": "Applying MPS patch for TaskAlignedAssigner (CPU offload) ..."})
-            orig_assigner = _patch_mps_assigner()
+        if is_mps or is_directml:
+            emit({"type": "info", "message": "Applying patch for TaskAlignedAssigner (CPU offload) ..."})
+            orig_assigner = _patch_assigner_cpu_offload()
 
         # AMP (mixed precision) is CUDA-only in ultralytics. Its startup AMP check
         # calls torch.cuda and crashes on DirectML/CPU ("Torch not compiled with
