@@ -556,9 +556,9 @@ def _run(args, tmp_root, YOLO, torch):
         )
 
         orig_unique = None
-        # if is_directml:
-        #     emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
-        #     orig_unique = _patch_directml_unique()
+        if is_directml:
+            emit({"type": "info", "message": "Applying DirectML patch for torch.unique ..."})
+            orig_unique = _patch_directml_unique()
 
         orig_assigner = None
         if is_mps:
